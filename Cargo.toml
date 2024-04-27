@@ -1,0 +1,4 @@
+[workspace]
+members = ["rm-core", "rm-gui", "key-mapper"]
+
+resolver = "2"
