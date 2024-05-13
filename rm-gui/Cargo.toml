@@ -3,4 +3,12 @@ name = "rm-gui"
 version = "0.1.0"
 edition = "2021"
 
+# For built
+build = "build.rs"
+
 [dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+rm-core = { path = "../rm-core" }
+
+[build-dependencies]
+built = { version = "0.7.2", features = ["git2"] }
