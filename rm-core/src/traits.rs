@@ -1,12 +1,18 @@
+use chrono::NaiveTime;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Zone {
-    pub alias: String,
-    pub local_name: String,
+    pub alias: u32,
+    pub local: u32,
     pub dimension: String,
     pub layer: String,
-    pub subzone: Option<String>,
+    pub subzone: Option<char>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Record {
+    pub time: NaiveTime,
 }
 
 /// Main enum which keeps list of all gatherable items in game and related data to them
@@ -18,8 +24,8 @@ pub enum GatherItem {
     Key(Zone, String),
     /// Zone, Name
     BulkheadKey(Zone, String),
-    /// Zone, Name
-    HSU(Zone, String),
+    /// Zone, Local Area ID, Local Area Name
+    HSU(Zone, u32, char),
     /// Zone, Name, item idx, idx
     Generator(Zone, String, u8, u8),
     /// Zone, Spawn Zone idx, Item Seed

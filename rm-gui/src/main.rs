@@ -1,37 +1,28 @@
 #![feature(duration_constructors)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::time::Duration;
 
-use rm_core::parser::parse;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use rm_core::parser::Parser;
 
-pub mod built_info {
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
+use rm_gui::built_info;
 
-fn main() {
-    let t = parse("14:25:37.123".as_bytes());
-    if let Ok(t) = t {
-        let v = (t + Duration::from_mins(14) + Duration::from_millis(321)) - t;
-        println!(
-            "{:?} {:?} {:?} {:?}",
-            t,
-            t + Duration::from_hours(3),
-            t + Duration::from_mins(14) + Duration::from_millis(321),
-            v
-        );
-    } else if let Err(t) = t {
-        println!("{:?}", t);
-    }
+#[cfg(not(target_arch = "wasm32"))]
+fn main() -> eframe::Result<()> {
+    env_logger::init();
 
-    println!(
-        "{} {}{} - compiler {}",
-        built_info::PKG_VERSION,
-        built_info::GIT_COMMIT_HASH_SHORT.unwrap(),
-        if built_info::GIT_DIRTY.unwrap() {
-            "(dirty)"
-        } else {
-            ""
-        },
-        built_info::RUSTC_VERSION
-    );
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([550.0, 350.0])
+            .with_min_inner_size([550.0, 350.0]),
+        ..Default::default()
+    };
+    let _parser = Parser::new();
+
+    eframe::run_native(
+        built_info::PKG_NAME,
+        native_options,
+        Box::new(|cc| Box::new(rm_gui::Mapper::new(cc))),
+    )
 }
