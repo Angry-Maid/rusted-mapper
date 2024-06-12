@@ -39,9 +39,8 @@ impl eframe::App for Mapper {
                 ui.horizontal(|ui| {
                     egui::warn_if_debug_build(ui);
                     ui.label(format!(
-                        "{} {}{}",
-                        built_info::PKG_VERSION,
-                        built_info::GIT_COMMIT_HASH_SHORT.unwrap(),
+                        "{}{}",
+                        built_info::GIT_VERSION.unwrap(),
                         if built_info::GIT_DIRTY.unwrap() {
                             "(dirty)"
                         } else {

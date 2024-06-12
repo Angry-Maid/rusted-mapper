@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use log::{debug, info, warn};
 use notify::{
-    event::CreateKind, recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode,
-    Watcher,
+    event::{CreateKind, DataChange, ModifyKind, RenameMode},
+    recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode, Watcher,
 };
 
 pub mod re {
@@ -78,7 +78,15 @@ impl Parser {
                 info!("{:?} {:?} {:?}", event.kind, event.attrs, event.paths);
                 match event.kind {
                     notify::EventKind::Any => {}
-                    notify::EventKind::Create(CreateKind::File) => {}
+                    notify::EventKind::Create(CreateKind::File) => {
+                        // On new File creation
+                    }
+                    notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)) => {
+                        // On new data in file <- doesn't work cause lib uses `ReadDirectoryChangesW`
+                    }
+                    notify::EventKind::Modify(ModifyKind::Name(RenameMode::Any)) => {
+                        // On file rename
+                    }
                     _ => {}
                 }
             }
