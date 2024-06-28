@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [unreleased]
+
+### 🚜 Refactor
+
+- [**breaking**] Prep groundwork for notify-rs to pick up file creation changes
+
 ## [0.1.0] - 2024-06-09
 
 ### 🚜 Refactor
