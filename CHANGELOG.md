@@ -7,6 +7,11 @@ All notable changes to this project will be documented in this file.
 ### 🚜 Refactor
 
 - [**breaking**] Prep groundwork for notify-rs to pick up file creation changes
+- [**breaking**] Rewrite of parser trait
+
+### ⚙️ Miscellaneous Tasks
+
+- *(rm-core)* Cleanup of parser and Parser impl
 
 ## [0.1.0] - 2024-06-09
 
