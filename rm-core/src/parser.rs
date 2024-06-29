@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc,
+};
 
 use chrono::NaiveTime;
 use log::{debug, error, info, warn};
@@ -20,6 +23,8 @@ pub struct Zone {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Record {
     pub time: NaiveTime,
+    pub item: Option<GatherItem>,
+    pub zone: Option<Zone>,
 }
 
 /// Main enum which keeps list of all gatherable items in game and related data to them
@@ -65,8 +70,10 @@ pub enum GatherItem {
     Cargo(Zone, String),
 }
 
+/// Only for internal use to match the id coming in from logs
+/// with `GatherItem` type inside `crate`
 #[derive(Debug, Serialize, Deserialize)]
-pub enum ItemIdentifier {
+enum ItemIdentifier {
     ID = 128,
     PD = 129,
     Cell = 131,
@@ -149,6 +156,8 @@ impl Parser {
         let profile_path =
             Path::new(env!("USERPROFILE")).join("appdata\\locallow\\10 Chambers Collective\\GTFO");
 
+        let (tx, rx) = mpsc::channel();
+
         Parser {
             watch_path: profile_path,
             dir_watcher: None,
@@ -158,13 +167,17 @@ impl Parser {
         }
     }
 
-    pub fn start_watcher(mut self) {
+    pub fn start_watcher(&mut self) {
         let mut watcher = recommended_watcher(|res: Result<Event, Error>| match res {
             Ok(event) => {
                 info!("{:?} {:?} {:?}", event.kind, event.attrs, event.paths);
                 match event.kind {
-                    notify::EventKind::Create(CreateKind::File) => {
+                    notify::EventKind::Create(CreateKind::Any) => {
                         // On new File creation
+                        info!(
+                            "Filename: {:?}",
+                            event.paths.first().unwrap().file_name().unwrap()
+                        );
                     }
                     notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)) => {
                         // On new data in file <- doesn't work cause lib uses `ReadDirectoryChangesW`

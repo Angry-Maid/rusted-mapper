@@ -12,14 +12,12 @@ Core of all types and functions for the rusted mapper applications.
 ### rm-gui
 Main application that will help with getting key items information from logs. Additional customaizability planned in future.
 - [ ] Key/Objectives Mapper
-- [ ] Autosplitter (thanks to [tgb](https://github.com/Tgb03) for the idea and implementations)
+- [ ] Autosplitter (thanks to [tgb](https://github.com/Tgb03) for the idea and (partial)implementations)
 - [ ] Zone Mapper (i.e. for autosplitter feauture, and if it feasable)
+- [ ] Live/Learning modes
 
-### key-mapper
-Simple GUI tool to create key map images with additional info exported as `ron/json` formats.
+### gather-mapper
+Simple GUI tool to create map of gatherables with additional info exported as `ron/json` formats.
 - [ ] Load image to edit
-- [ ] Add ability to place lockers with additional information(upstairs/downstairs, regular/padlock/hacklock)
+- [ ] Add ability to place gatherable objects with additional information(upstairs/downstairs, for lockers/boxes regular/padlock/hacklock)
 - [ ] Export to `ron/json` and other etc. types if need arises.
-
-## Additional info
-TBA

@@ -1,5 +1,5 @@
 [workspace]
-members = ["rm-core", "rm-gui", "key-mapper"]
+members = ["rm-core", "rm-gui", "gather-mapper"]
 
 resolver = "2"
 

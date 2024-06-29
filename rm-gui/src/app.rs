@@ -1,20 +1,30 @@
+use rm_core::parser::Parser;
 use serde::{self, Deserialize, Serialize};
 
 use crate::built_info;
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-pub struct Mapper {}
+pub struct Mapper {
+    #[serde(skip)]
+    parser: Parser,
+}
 
 impl Default for Mapper {
     fn default() -> Self {
-        Self {}
+        Self {
+            parser: Parser::new(),
+        }
     }
 }
 
 impl Mapper {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        Default::default()
+        let mut s: Mapper = Default::default();
+
+        s.parser.start_watcher();
+
+        s
     }
 }
 
