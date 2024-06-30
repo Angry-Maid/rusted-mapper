@@ -4,7 +4,6 @@
 use std::time::Duration;
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-use rm_core::parser::Parser;
 
 use rm_gui::built_info;
 
@@ -15,10 +14,10 @@ fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([550.0, 350.0])
-            .with_min_inner_size([550.0, 350.0]),
+            .with_min_inner_size([550.0, 350.0])
+            .with_window_level(egui::WindowLevel::AlwaysOnTop),
         ..Default::default()
     };
-    let _parser = Parser::new();
 
     eframe::run_native(
         built_info::PKG_NAME,

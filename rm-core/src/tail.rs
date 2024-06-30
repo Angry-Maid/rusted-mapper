@@ -2,10 +2,7 @@ use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
     path::PathBuf,
-    sync::{
-        mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc,
-    },
+    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread,
     time::Duration,
 };
@@ -63,9 +60,11 @@ impl Tail {
             if let Some(ref mut file) = logfile {
                 let buf: &mut String = &mut Default::default();
 
-                file.read_to_string(buf);
+                file.read_to_string(buf).unwrap();
 
-                data_tranceiver.send(buf.to_string());
+                if !buf.is_empty() {
+                    data_tranceiver.send(buf.to_string()).unwrap();
+                }
 
                 file.seek(SeekFrom::Current(0)).unwrap();
             }

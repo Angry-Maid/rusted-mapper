@@ -1,18 +1,17 @@
 use std::{
+    borrow::Borrow,
     path::{Path, PathBuf},
-    sync::{
-        mpsc::{channel, Receiver, Sender},
-        Arc,
-    },
+    sync::mpsc::{Receiver, Sender},
 };
 
 use chrono::NaiveTime;
-use log::{debug, error, info, warn};
+use log::{error, info};
 use notify::{
     event::{CreateKind, DataChange, ModifyKind, RenameMode},
     recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use serde::{Deserialize, Serialize};
+use walkdir::WalkDir;
 
 use crate::tail::{Tail, TailMessage};
 
@@ -152,7 +151,7 @@ pub struct Parser {
     watch_path: PathBuf,
     dir_watcher: Option<RecommendedWatcher>,
     tail_cmd_tx: Option<Sender<TailMessage>>,
-    tail_data_rx: Option<Receiver<String>>,
+    pub tail_data_rx: Option<Receiver<String>>,
     tail: Option<Tail>,
     state: ParserState,
 }
@@ -184,14 +183,54 @@ impl Parser {
         self.tail_cmd_tx.replace(command_tx.clone());
         self.tail_data_rx.replace(data_rx);
 
+        // We first look for `NICKNAME_NETSTATUS` file in case
+        // rusted-mapper was opened after the game was open.
+        for entry in WalkDir::new(self.watch_path.clone().as_path().to_owned())
+            .min_depth(1)
+            .max_depth(1)
+            .sort_by(|a, b| {
+                b.metadata()
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+                    .cmp(&a.metadata().unwrap().modified().unwrap())
+            })
+        {
+            if let Ok(dir_entry) = entry {
+                info!("{:?}", dir_entry.file_name());
+                if dir_entry
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+                    .contains("NICKNAME_NETSTATUS")
+                {
+                    command_tx
+                        .send(TailMessage::OpenNewFile(dir_entry.path().to_path_buf()))
+                        .unwrap();
+                    break;
+                }
+            }
+        }
+
         let mut watcher = recommended_watcher(move |res: Result<Event, Error>| match res {
             Ok(event) => {
                 info!("{:?} {:?} {:?}", event.kind, event.attrs, event.paths);
                 match event.kind {
                     notify::EventKind::Create(CreateKind::Any) => {
-                        command_tx.send(TailMessage::OpenNewFile(
-                            event.paths.first().unwrap().to_path_buf(),
-                        ));
+                        if let Some(path) = event.paths.first() {
+                            match path.file_name() {
+                                Some(filename) => {
+                                    let n: String = filename.to_str().unwrap().to_string();
+                                    if n.contains("NICKNAME_NETSTATUS") {
+                                        command_tx
+                                            .send(TailMessage::OpenNewFile(path.to_path_buf()))
+                                            .unwrap();
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
                         info!(
                             "Filename: {:?}",
                             event.paths.first().unwrap().file_name().unwrap()
@@ -218,7 +257,11 @@ impl Parser {
     }
 
     pub fn stop_tail(&mut self) {
-        self.tail_cmd_tx.clone().unwrap().send(TailMessage::Stop);
+        self.tail_cmd_tx
+            .clone()
+            .unwrap()
+            .send(TailMessage::Stop)
+            .unwrap();
     }
 }
 

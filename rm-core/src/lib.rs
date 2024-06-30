@@ -1,4 +1,4 @@
 #![feature(lazy_cell)]
 
-mod parser;
-mod tail;
+pub mod parser;
+pub mod tail;
