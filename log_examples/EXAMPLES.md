@@ -5,6 +5,7 @@ It's only appliable to the objective items, all other items either get instantia
 | --- | --- | --- |
 | HSU | `LG_Distribute_WardenObjective` and `Area` | Sub-area and possible(?) spawn ID slot |
 | Key | `CreateKeyItemDistribution` and `KEY_COLOR_ID` and `TryGetExistingGenericFunctionDistributionForSession` | Starts with `CreateKeyItemDistribution` and provides key name and ends with `function: [ResourceContainerWeak] available: {ID}` |
+| ID | `GenericSmallPickupItem_Core.SetupFromLevelgen` with `seed: {SEED}` which will correspond to specific place` |
 | Cell/ID/GLP/Plant/PD/DataCube/Cargo/Neonate/Datasphere/Turbine | `LG_Distribute_WardenObjective` * `itemsToSpawn: [Count: {COUNT}] {ITEM_ID}...` and `LG_Distribute_WardenObjective.SelectZoneFromPlacementAndKeepTrackOnCount, creating dist in zone ZONE{ID}` | Count of items that it spawns and zone in which it spawned, maybe agnostic for all pickupable items |
 
 ## Unique Instances
