@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{Read, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{
         mpsc::{channel, Receiver, Sender, TryRecvError},
@@ -19,72 +19,58 @@ pub enum TailMessage {
     Stop,
 }
 
-#[derive(Debug)]
-pub struct Tail {
-    pub cmd_tx: Sender<TailMessage>,
-    pub cmd_rx: Receiver<TailMessage>,
-    pub tx: Sender<String>,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct Tail;
 
 impl Tail {
-    pub fn new(outer_tx: Sender<String>) -> Self {
-        let (tx, rx) = channel::<TailMessage>();
-
-        Self {
-            cmd_tx: tx,
-            cmd_rx: rx,
-            tx: outer_tx,
-        }
+    pub fn new() -> Self {
+        Self {}
     }
 
-    pub fn start_listen(self) {
-        let mut cmd_rx = self.cmd_rx.clone();
+    pub fn start_listen(&mut self) -> Result<(Sender<TailMessage>, Receiver<String>), io::Error> {
+        let (command_tx, command_rx) = channel::<TailMessage>();
+        let (data_tx, data_rx) = channel::<String>();
 
         thread::Builder::new()
             .name("Tail file reader".into())
-            .spawn(move || {
-                let mut limiter = CpuLimiter::new(Duration::from_millis(150));
+            .spawn(|| Tail::tail_file(command_rx, data_tx))?;
 
-                let mut logfile: Option<File> = None;
-                loop {
-                    match cmd_rx.try_recv() {
-                        Ok(val) => match val {
-                            TailMessage::OpenNewFile(filepath) => {
-                                logfile.replace(File::open(filepath).unwrap());
-                            }
-                            TailMessage::Stop => {
-                                info!("Tail channel got command stop, stopping thread.");
-                                break;
-                            }
-                        },
-                        Err(TryRecvError::Empty) => {}
-                        Err(e) => {
-                            debug!("Tail channel was disconnected - {e:?}");
-                            break;
-                        }
+        Ok((command_tx, data_rx))
+    }
+
+    pub fn tail_file(command_receiver: Receiver<TailMessage>, data_tranceiver: Sender<String>) {
+        let mut limiter = CpuLimiter::new(Duration::from_millis(150));
+
+        let mut logfile: Option<File> = None;
+        loop {
+            match command_receiver.try_recv() {
+                Ok(val) => match val {
+                    TailMessage::OpenNewFile(filepath) => {
+                        logfile.replace(File::open(filepath).unwrap());
                     }
-
-                    if let Some(ref mut file) = logfile {
-                        let mut buf: &mut String = &mut Default::default();
-
-                        file.read_to_string(buf);
-
-                        self.tx.send(buf.to_string());
-
-                        file.seek(SeekFrom::Current(0)).unwrap();
+                    TailMessage::Stop => {
+                        info!("Tail channel got command stop, stopping thread.");
+                        break;
                     }
-
-                    limiter.might_sleep();
+                },
+                Err(TryRecvError::Empty) => {}
+                Err(e) => {
+                    debug!("Tail channel was disconnected - {e:?}");
+                    break;
                 }
-            })
-            .unwrap();
-    }
+            }
 
-    pub fn stop(self) {
-        self.cmd_tx.send(TailMessage::Stop).unwrap();
-    }
+            if let Some(ref mut file) = logfile {
+                let buf: &mut String = &mut Default::default();
 
-    pub fn open_file(self, path: PathBuf) {
-        self.cmd_tx.send(TailMessage::OpenNewFile(path)).unwrap();
+                file.read_to_string(buf);
+
+                data_tranceiver.send(buf.to_string());
+
+                file.seek(SeekFrom::Current(0)).unwrap();
+            }
+
+            limiter.might_sleep();
+        }
     }
 }

@@ -1,7 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        mpsc::{channel, Receiver},
+        mpsc::{channel, Receiver, Sender},
         Arc,
     },
 };
@@ -14,7 +14,7 @@ use notify::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::tail::Tail;
+use crate::tail::{Tail, TailMessage};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Zone {
@@ -151,8 +151,9 @@ pub enum ParserState {
 pub struct Parser {
     watch_path: PathBuf,
     dir_watcher: Option<RecommendedWatcher>,
-    tail_rx: Option<Receiver<String>>,
-    tail: Option<Arc<Tail>>,
+    tail_cmd_tx: Option<Sender<TailMessage>>,
+    tail_data_rx: Option<Receiver<String>>,
+    tail: Option<Tail>,
     state: ParserState,
 }
 
@@ -167,28 +168,30 @@ impl Parser {
         Parser {
             watch_path: profile_path,
             dir_watcher: None,
-            tail_rx: None,
+            tail_cmd_tx: None,
+            tail_data_rx: None,
             tail: None,
             state: Default::default(),
         }
     }
 
     pub fn start_watcher(&mut self) {
-        let (tx, rx) = channel::<String>();
-        self.tail_rx.replace(rx);
+        self.tail.replace(Tail::new());
 
-        self.tail.replace(Arc::new(Tail::new(tx)));
+        let (command_tx, data_rx): (Sender<TailMessage>, Receiver<String>) =
+            self.tail.unwrap().start_listen().unwrap();
 
-        self.tail.unwrap().start_listen();
+        self.tail_cmd_tx.replace(command_tx.clone());
+        self.tail_data_rx.replace(data_rx);
 
-        let tail = self.tail.unwrap().clone();
-
-        let mut watcher = recommended_watcher(|res: Result<Event, Error>| match res {
+        let mut watcher = recommended_watcher(move |res: Result<Event, Error>| match res {
             Ok(event) => {
                 info!("{:?} {:?} {:?}", event.kind, event.attrs, event.paths);
                 match event.kind {
                     notify::EventKind::Create(CreateKind::Any) => {
-                        tail.open_file(event.paths.first().unwrap().to_path_buf());
+                        command_tx.send(TailMessage::OpenNewFile(
+                            event.paths.first().unwrap().to_path_buf(),
+                        ));
                         info!(
                             "Filename: {:?}",
                             event.paths.first().unwrap().file_name().unwrap()
@@ -212,6 +215,10 @@ impl Parser {
             .unwrap();
 
         self.dir_watcher.replace(watcher);
+    }
+
+    pub fn stop_tail(&mut self) {
+        self.tail_cmd_tx.clone().unwrap().send(TailMessage::Stop);
     }
 }
 
