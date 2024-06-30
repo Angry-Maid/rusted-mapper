@@ -1,6 +1,9 @@
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        mpsc::{channel, Receiver},
+        Arc,
+    },
 };
 
 use chrono::NaiveTime;
@@ -10,6 +13,8 @@ use notify::{
     recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::tail::Tail;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Zone {
@@ -146,34 +151,44 @@ pub enum ParserState {
 pub struct Parser {
     watch_path: PathBuf,
     dir_watcher: Option<RecommendedWatcher>,
-    buffer: Vec<String>,
-    end_pos: usize,
+    tail_rx: Option<Receiver<String>>,
+    tail: Option<Arc<Tail>>,
     state: ParserState,
 }
 
 impl Parser {
-    pub fn new() -> Self {
-        let profile_path =
-            Path::new(env!("USERPROFILE")).join("appdata\\locallow\\10 Chambers Collective\\GTFO");
-
-        let (tx, rx) = mpsc::channel();
+    pub fn new(watch_path: Option<PathBuf>) -> Self {
+        let profile_path = if let Some(path) = watch_path {
+            path
+        } else {
+            Path::new(env!("USERPROFILE")).join("appdata\\locallow\\10 Chambers Collective\\GTFO")
+        };
 
         Parser {
             watch_path: profile_path,
             dir_watcher: None,
-            buffer: Default::default(),
-            end_pos: 0,
+            tail_rx: None,
+            tail: None,
             state: Default::default(),
         }
     }
 
     pub fn start_watcher(&mut self) {
+        let (tx, rx) = channel::<String>();
+        self.tail_rx.replace(rx);
+
+        self.tail.replace(Arc::new(Tail::new(tx)));
+
+        self.tail.unwrap().start_listen();
+
+        let tail = self.tail.unwrap().clone();
+
         let mut watcher = recommended_watcher(|res: Result<Event, Error>| match res {
             Ok(event) => {
                 info!("{:?} {:?} {:?}", event.kind, event.attrs, event.paths);
                 match event.kind {
                     notify::EventKind::Create(CreateKind::Any) => {
-                        // On new File creation
+                        tail.open_file(event.paths.first().unwrap().to_path_buf());
                         info!(
                             "Filename: {:?}",
                             event.paths.first().unwrap().file_name().unwrap()
@@ -188,7 +203,7 @@ impl Parser {
                     _ => {}
                 }
             }
-            Err(e) => error!("{:?}", e),
+            Err(e) => error!("{e:?}"),
         })
         .unwrap();
 
@@ -196,7 +211,7 @@ impl Parser {
             .watch(self.watch_path.as_path(), RecursiveMode::NonRecursive)
             .unwrap();
 
-        self.dir_watcher = Some(watcher);
+        self.dir_watcher.replace(watcher);
     }
 }
 
