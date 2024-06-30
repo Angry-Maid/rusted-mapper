@@ -22,7 +22,7 @@ pub enum TailMessage {
 #[derive(Debug)]
 pub struct Tail {
     pub cmd_tx: Sender<TailMessage>,
-    pub cmd_rx: Arc<Receiver<TailMessage>>,
+    pub cmd_rx: Receiver<TailMessage>,
     pub tx: Sender<String>,
 }
 
@@ -32,7 +32,7 @@ impl Tail {
 
         Self {
             cmd_tx: tx,
-            cmd_rx: Arc::new(rx),
+            cmd_rx: rx,
             tx: outer_tx,
         }
     }
