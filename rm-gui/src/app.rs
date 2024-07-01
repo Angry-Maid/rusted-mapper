@@ -32,7 +32,7 @@ impl Mapper {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut s: Mapper = Default::default();
 
-        s.parser.start_watcher();
+        s.parser.start_watcher().unwrap();
 
         s
     }
@@ -42,9 +42,12 @@ impl eframe::App for Mapper {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(100));
 
-        let data = &self.parser.tail_data_rx.as_ref().unwrap().try_recv();
-        match data {
-            Ok(d) => self.log_buffer.push(d.to_owned()),
+        let data_msg = &self.parser.tail_data_rx.as_ref().unwrap().try_recv();
+        match data_msg {
+            Ok(msg) => match msg {
+                rm_core::tail::TailMsg::Content(s) => self.log_buffer.push(s.to_owned()),
+                rm_core::tail::TailMsg::NewFile => self.log_buffer.clear(),
+            },
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => debug!("Got disconnect from tail_data_rx"),
         }
@@ -61,8 +64,6 @@ impl eframe::App for Mapper {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
-                    ui.add_space(16.0);
-                    egui::widgets::global_dark_light_mode_buttons(ui);
                     ui.add_space(8.0);
                     ui.checkbox(&mut self.scroll_to_bottom, "Autoscroll to Bottom");
                 });

@@ -9,11 +9,18 @@ use std::{
 
 use log::{debug, info};
 use might_sleep::cpu_limiter::CpuLimiter;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
-pub enum TailMessage {
-    OpenNewFile(PathBuf),
+pub enum TailCmd {
+    Open(PathBuf),
     Stop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TailMsg {
+    Content(String),
+    NewFile,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -24,9 +31,9 @@ impl Tail {
         Self {}
     }
 
-    pub fn start_listen(&mut self) -> Result<(Sender<TailMessage>, Receiver<String>), io::Error> {
-        let (command_tx, command_rx) = channel::<TailMessage>();
-        let (data_tx, data_rx) = channel::<String>();
+    pub fn start_listen(&mut self) -> anyhow::Result<(Sender<TailCmd>, Receiver<TailMsg>)> {
+        let (command_tx, command_rx) = channel::<TailCmd>();
+        let (data_tx, data_rx) = channel::<TailMsg>();
 
         thread::Builder::new()
             .name("Tail file reader".into())
@@ -35,17 +42,21 @@ impl Tail {
         Ok((command_tx, data_rx))
     }
 
-    pub fn tail_file(command_receiver: Receiver<TailMessage>, data_tranceiver: Sender<String>) {
+    pub fn tail_file(
+        command_receiver: Receiver<TailCmd>,
+        data_tranceiver: Sender<TailMsg>,
+    ) -> anyhow::Result<()> {
         let mut limiter = CpuLimiter::new(Duration::from_millis(150));
 
         let mut logfile: Option<File> = None;
         loop {
             match command_receiver.try_recv() {
                 Ok(val) => match val {
-                    TailMessage::OpenNewFile(filepath) => {
-                        logfile.replace(File::open(filepath).unwrap());
+                    TailCmd::Open(filepath) => {
+                        logfile.replace(File::open(filepath)?);
+                        data_tranceiver.send(TailMsg::NewFile)?;
                     }
-                    TailMessage::Stop => {
+                    TailCmd::Stop => {
                         info!("Tail channel got command stop, stopping thread.");
                         break;
                     }
@@ -60,16 +71,18 @@ impl Tail {
             if let Some(ref mut file) = logfile {
                 let buf: &mut String = &mut Default::default();
 
-                file.read_to_string(buf).unwrap();
+                file.read_to_string(buf)?;
 
                 if !buf.is_empty() {
-                    data_tranceiver.send(buf.to_string()).unwrap();
+                    data_tranceiver.send(TailMsg::Content(buf.to_string()))?;
                 }
 
-                file.seek(SeekFrom::Current(0)).unwrap();
+                file.seek(SeekFrom::Current(0))?;
             }
 
             limiter.might_sleep();
         }
+
+        Ok(())
     }
 }

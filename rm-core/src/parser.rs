@@ -1,5 +1,4 @@
 use std::{
-    borrow::Borrow,
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender},
 };
@@ -13,7 +12,7 @@ use notify::{
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-use crate::tail::{Tail, TailMessage};
+use crate::tail::{Tail, TailCmd, TailMsg};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Zone {
@@ -150,8 +149,8 @@ pub enum ParserState {
 pub struct Parser {
     watch_path: PathBuf,
     dir_watcher: Option<RecommendedWatcher>,
-    tail_cmd_tx: Option<Sender<TailMessage>>,
-    pub tail_data_rx: Option<Receiver<String>>,
+    tail_cmd_tx: Option<Sender<TailCmd>>,
+    pub tail_data_rx: Option<Receiver<TailMsg>>,
     tail: Option<Tail>,
     state: ParserState,
 }
@@ -174,11 +173,11 @@ impl Parser {
         }
     }
 
-    pub fn start_watcher(&mut self) {
+    pub fn start_watcher(&mut self) -> anyhow::Result<()> {
         self.tail.replace(Tail::new());
 
-        let (command_tx, data_rx): (Sender<TailMessage>, Receiver<String>) =
-            self.tail.unwrap().start_listen().unwrap();
+        let (command_tx, data_rx): (Sender<TailCmd>, Receiver<TailMsg>) =
+            self.tail.unwrap().start_listen()?;
 
         self.tail_cmd_tx.replace(command_tx.clone());
         self.tail_data_rx.replace(data_rx);
@@ -198,16 +197,11 @@ impl Parser {
         {
             if let Ok(dir_entry) = entry {
                 info!("{:?}", dir_entry.file_name());
-                if dir_entry
-                    .file_name()
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-                    .contains("NICKNAME_NETSTATUS")
-                {
-                    command_tx
-                        .send(TailMessage::OpenNewFile(dir_entry.path().to_path_buf()))
-                        .unwrap();
+                if match dir_entry.file_name().to_str() {
+                    Some(val) => val.contains("NICKNAME_NETSTATUS"),
+                    None => false,
+                } {
+                    command_tx.send(TailCmd::Open(dir_entry.path().to_path_buf()))?;
                     break;
                 }
             }
@@ -221,11 +215,11 @@ impl Parser {
                         if let Some(path) = event.paths.first() {
                             match path.file_name() {
                                 Some(filename) => {
-                                    let n: String = filename.to_str().unwrap().to_string();
-                                    if n.contains("NICKNAME_NETSTATUS") {
-                                        command_tx
-                                            .send(TailMessage::OpenNewFile(path.to_path_buf()))
-                                            .unwrap();
+                                    if match filename.to_str() {
+                                        Some(val) => val.contains("NICKNAME_NETSTATUS"),
+                                        None => false,
+                                    } {
+                                        command_tx.send(TailCmd::Open(path.to_path_buf())).unwrap();
                                     }
                                 }
                                 None => {}
@@ -249,19 +243,17 @@ impl Parser {
         })
         .unwrap();
 
-        watcher
-            .watch(self.watch_path.as_path(), RecursiveMode::NonRecursive)
-            .unwrap();
+        watcher.watch(self.watch_path.as_path(), RecursiveMode::NonRecursive)?;
 
         self.dir_watcher.replace(watcher);
+
+        Ok(())
     }
 
-    pub fn stop_tail(&mut self) {
-        self.tail_cmd_tx
-            .clone()
-            .unwrap()
-            .send(TailMessage::Stop)
-            .unwrap();
+    pub fn stop_tail(&mut self) -> anyhow::Result<()> {
+        self.tail_cmd_tx.clone().unwrap().send(TailCmd::Stop)?;
+
+        Ok(())
     }
 }
 
