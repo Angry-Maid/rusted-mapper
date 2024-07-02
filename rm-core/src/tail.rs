@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread,
@@ -24,7 +24,7 @@ pub enum TailMsg {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Tail;
+pub struct Tail {}
 
 impl Tail {
     pub fn new() -> Self {
@@ -36,25 +36,25 @@ impl Tail {
         let (data_tx, data_rx) = channel::<TailMsg>();
 
         thread::Builder::new()
-            .name("Tail file reader".into())
+            .name("tail file reader".into())
             .spawn(|| Tail::tail_file(command_rx, data_tx))?;
 
         Ok((command_tx, data_rx))
     }
 
     pub fn tail_file(
-        command_receiver: Receiver<TailCmd>,
-        data_tranceiver: Sender<TailMsg>,
+        command_rx: Receiver<TailCmd>,
+        data_tx: Sender<TailMsg>,
     ) -> anyhow::Result<()> {
-        let mut limiter = CpuLimiter::new(Duration::from_millis(150));
+        let mut limiter = CpuLimiter::new(Duration::from_millis(250));
 
         let mut logfile: Option<File> = None;
         loop {
-            match command_receiver.try_recv() {
+            match command_rx.try_recv() {
                 Ok(val) => match val {
                     TailCmd::Open(filepath) => {
                         logfile.replace(File::open(filepath)?);
-                        data_tranceiver.send(TailMsg::NewFile)?;
+                        data_tx.send(TailMsg::NewFile)?;
                     }
                     TailCmd::Stop => {
                         info!("Tail channel got command stop, stopping thread.");
@@ -62,8 +62,8 @@ impl Tail {
                     }
                 },
                 Err(TryRecvError::Empty) => {}
-                Err(e) => {
-                    debug!("Tail channel was disconnected - {e:?}");
+                Err(TryRecvError::Disconnected) => {
+                    debug!("Tail channel was disconnected");
                     break;
                 }
             }
@@ -74,7 +74,7 @@ impl Tail {
                 file.read_to_string(buf)?;
 
                 if !buf.is_empty() {
-                    data_tranceiver.send(TailMsg::Content(buf.to_string()))?;
+                    data_tx.send(TailMsg::Content(buf.to_string()))?;
                 }
 
                 file.seek(SeekFrom::Current(0))?;

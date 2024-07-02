@@ -40,13 +40,13 @@ impl Mapper {
 
 impl eframe::App for Mapper {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_millis(100));
+        ctx.request_repaint_after(Duration::from_millis(50));
 
-        let data_msg = &self.parser.tail_data_rx.as_ref().unwrap().try_recv();
+        let data_msg = &self.parser.rx.as_ref().unwrap().try_recv();
         match data_msg {
             Ok(msg) => match msg {
-                rm_core::tail::TailMsg::Content(s) => self.log_buffer.push(s.to_owned()),
-                rm_core::tail::TailMsg::NewFile => self.log_buffer.clear(),
+                rm_core::parser::ParserMsg::Content(s) => self.log_buffer.push(s.to_owned()),
+                rm_core::parser::ParserMsg::NewFile => self.log_buffer.clear(),
             },
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => debug!("Got disconnect from tail_data_rx"),

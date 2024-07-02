@@ -1,10 +1,14 @@
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    thread,
+    time::Duration,
 };
 
 use chrono::NaiveTime;
+use glam::Vec2;
 use log::{error, info};
+use might_sleep::cpu_limiter::CpuLimiter;
 use notify::{
     event::{CreateKind, DataChange, ModifyKind, RenameMode},
     recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode, Watcher,
@@ -28,6 +32,40 @@ pub struct Record {
     pub time: NaiveTime,
     pub item: Option<GatherItem>,
     pub zone: Option<Zone>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum TimerEntry {
+    Start,
+    Zone(Zone),
+    Invariance(Vec<Zone>, InvarianceMethod),
+    End,
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub enum InvarianceMethod {
+    #[default]
+    All,
+    /// Number of Zones, filter Item, max num of Item
+    ///
+    /// Filter by Item(if item was provided) up to N zones
+    /// Max N of items only to have a treshold
+    Any(u32, Option<ItemIdentifier>, Option<u32>),
+    ByGatherable(ItemIdentifier),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Level {
+    pub name: String,
+    pub gathatable_items: Vec<GatherItem>,
+    pub zones: Vec<TimerEntry>,
+    pub maps: Vec<GatherableMap>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GatherableMap {
+    pub outline_poly: Vec<Vec2>,
+    pub blockouts: Vec<[Vec2; 4]>,
 }
 
 /// Main enum which keeps list of all gatherable items in game and related data to them
@@ -73,10 +111,8 @@ pub enum GatherItem {
     Cargo(Zone, String),
 }
 
-/// Only for internal use to match the id coming in from logs
-/// with `GatherItem` type inside `crate`
 #[derive(Debug, Serialize, Deserialize)]
-enum ItemIdentifier {
+pub enum ItemIdentifier {
     ID = 128,
     PD = 129,
     Cell = 131,
@@ -138,21 +174,18 @@ pub mod re {
     });
 }
 
-#[derive(Default, Debug, Eq, PartialEq, Clone, Copy)]
-pub enum ParserState {
-    #[default]
-    InitialState,
-    BuilderStart,
-    BuilderEnd,
-}
-
 pub struct Parser {
     watch_path: PathBuf,
     dir_watcher: Option<RecommendedWatcher>,
     tail_cmd_tx: Option<Sender<TailCmd>>,
-    pub tail_data_rx: Option<Receiver<TailMsg>>,
     tail: Option<Tail>,
-    state: ParserState,
+    pub rx: Option<Receiver<ParserMsg>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ParserMsg {
+    Content(String),
+    NewFile,
 }
 
 impl Parser {
@@ -167,9 +200,8 @@ impl Parser {
             watch_path: profile_path,
             dir_watcher: None,
             tail_cmd_tx: None,
-            tail_data_rx: None,
             tail: None,
-            state: Default::default(),
+            rx: None,
         }
     }
 
@@ -179,8 +211,14 @@ impl Parser {
         let (command_tx, data_rx): (Sender<TailCmd>, Receiver<TailMsg>) =
             self.tail.unwrap().start_listen()?;
 
+        let (parser_tx, parser_rx) = channel::<ParserMsg>();
+
         self.tail_cmd_tx.replace(command_tx.clone());
-        self.tail_data_rx.replace(data_rx);
+        self.rx = Some(parser_rx);
+
+        thread::Builder::new()
+            .name("parser".into())
+            .spawn(|| Parser::parse(data_rx, parser_tx))?;
 
         // We first look for `NICKNAME_NETSTATUS` file in case
         // rusted-mapper was opened after the game was open.
@@ -240,12 +278,11 @@ impl Parser {
                 }
             }
             Err(e) => error!("{e:?}"),
-        })
-        .unwrap();
+        })?;
 
         watcher.watch(self.watch_path.as_path(), RecursiveMode::NonRecursive)?;
 
-        self.dir_watcher.replace(watcher);
+        self.dir_watcher = Some(watcher);
 
         Ok(())
     }
@@ -254,6 +291,42 @@ impl Parser {
         self.tail_cmd_tx.clone().unwrap().send(TailCmd::Stop)?;
 
         Ok(())
+    }
+
+    pub fn parse(data_rx: Receiver<TailMsg>, parser_tx: Sender<ParserMsg>) -> anyhow::Result<()> {
+        // Inner state manager
+
+        let mut limiter = CpuLimiter::new(Duration::from_millis(250));
+
+        loop {
+            match data_rx.try_recv() {
+                Ok(val) => {
+                    // For now we get the message and propagate it back
+                    match val {
+                        TailMsg::Content(s) => {
+                            info!("{}", s);
+                            parser_tx.send(ParserMsg::Content(s))?;
+                        }
+                        TailMsg::NewFile => parser_tx.send(ParserMsg::NewFile)?,
+                    }
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    error!("Got disconnect from data channel");
+                    break;
+                }
+            }
+
+            limiter.might_sleep();
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for Parser {
+    fn drop(&mut self) {
+        self.stop_tail().unwrap();
     }
 }
 

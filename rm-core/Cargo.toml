@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.86"
 chrono = { version = "0.4.38", features = ["serde"] }
+glam = { version = "0.28.0", features = ["serde"] }
 log = "0.4.21"
 might_sleep = "0.2.0"
 notify = "6.1.1"
