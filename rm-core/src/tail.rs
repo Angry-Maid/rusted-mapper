@@ -21,6 +21,7 @@ pub enum TailCmd {
 pub enum TailMsg {
     Content(String),
     NewFile,
+    Stop,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +58,7 @@ impl Tail {
                         data_tx.send(TailMsg::NewFile)?;
                     }
                     TailCmd::Stop => {
+                        data_tx.send(TailMsg::Stop);
                         info!("Tail channel got command stop, stopping thread.");
                         break;
                     }

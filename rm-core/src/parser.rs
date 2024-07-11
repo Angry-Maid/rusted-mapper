@@ -1,4 +1,5 @@
 use std::{
+    default,
     path::{Path, PathBuf},
     sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread,
@@ -48,7 +49,7 @@ pub enum InvarianceMethod {
     All,
     /// Number of Zones, filter Item, max num of Item
     ///
-    /// Filter by Item(if item was provided) up to N zones
+    /// Filter by Item(if item was provided) N zones
     /// Max N of items only to have a treshold
     Any(u32, Option<ItemIdentifier>, Option<u32>),
     ByGatherable(ItemIdentifier),
@@ -81,10 +82,10 @@ pub enum GatherItem {
     HSU(Zone, u32, char),
     /// Zone, Name, item idx, idx
     Generator(Zone, String, u8, u8),
-    /// Zone, Spawn Zone idx, Item Seed
-    ID(Zone, u8, u32),
-    /// Zone, Spawn Zone idx, Item Seed
-    PD(Zone, u8, u32),
+    /// Zone, Item Seed
+    ID(Zone, u32),
+    /// Zone, Item Seed
+    PD(Zone, u32),
     /// Zone, Spawn Zone idx
     Cell(Zone, u8),
     /// Zone, Name
@@ -93,20 +94,20 @@ pub enum GatherItem {
     Neonate(Zone, String),
     /// Zone, Name
     Cryo(Zone, String),
-    /// Zone, Spawn Zone idx, Item Seed
-    GLP1(Zone, u8, u32),
-    /// Zone, Spawn Zone idx, Item Seed
-    OSIP(Zone, u8, u32),
+    /// Zone, Item Seed
+    GLP1(Zone, u32),
+    /// Zone, Item Seed
+    OSIP(Zone, u32),
     /// Zone, Spawn Zone idx
     Datasphere(Zone, u8),
-    /// Zone, Spawn Zone idx, Item Seed
-    PlantSample(Zone, u8, u32),
+    /// Zone, Item Seed
+    PlantSample(Zone, u32),
     /// Zone, Name
     HiSec(Zone, String),
-    /// Zone, Spawn Zone idx, Item Seed
-    DataCube(Zone, u8, u32),
-    /// Zone, Spawn Zone idx, Item Seed
-    GLP2(Zone, u8, u32),
+    /// Zone, Item Seed
+    DataCube(Zone, u32),
+    /// Zone, Item Seed
+    GLP2(Zone, u32),
     /// Zone, Name
     Cargo(Zone, String),
 }
@@ -174,6 +175,7 @@ pub mod re {
     });
 }
 
+#[derive(Debug)]
 pub struct Parser {
     watch_path: PathBuf,
     dir_watcher: Option<RecommendedWatcher>,
@@ -182,10 +184,31 @@ pub struct Parser {
     pub rx: Option<Receiver<ParserMsg>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub enum ParserMsg {
-    Content(String),
+    LevelInit(Level),
+    Gatherable(GatherItem),
+    LevelStart,
+    ZoneDoorOpened,
+    LevelFinish,
     NewFile,
+}
+
+#[derive(Debug, Default)]
+enum ParserState {
+    #[default]
+    Initial,
+    LevelGenerationStart,
+    LevelGenerationFinish,
+    ElevatorDropFinish,
+    LevelFinish,
+}
+
+#[derive(Debug, Default)]
+struct ParserManager {
+    buffer: String,
+    pos: usize,
+    state: ParserState,
 }
 
 impl Parser {
@@ -218,7 +241,7 @@ impl Parser {
 
         thread::Builder::new()
             .name("parser".into())
-            .spawn(|| Parser::parse(data_rx, parser_tx))?;
+            .spawn(|| Parser::parser(data_rx, parser_tx))?;
 
         // We first look for `NICKNAME_NETSTATUS` file in case
         // rusted-mapper was opened after the game was open.
@@ -293,10 +316,11 @@ impl Parser {
         Ok(())
     }
 
-    pub fn parse(data_rx: Receiver<TailMsg>, parser_tx: Sender<ParserMsg>) -> anyhow::Result<()> {
+    pub fn parser(data_rx: Receiver<TailMsg>, parser_tx: Sender<ParserMsg>) -> anyhow::Result<()> {
         // Inner state manager
 
         let mut limiter = CpuLimiter::new(Duration::from_millis(250));
+        let mut parser_manager = ParserManager::default();
 
         loop {
             match data_rx.try_recv() {
@@ -304,10 +328,15 @@ impl Parser {
                     // For now we get the message and propagate it back
                     match val {
                         TailMsg::Content(s) => {
-                            info!("{}", s);
-                            parser_tx.send(ParserMsg::Content(s))?;
+                            parser_manager.buffer.extend(s.chars());
+                            info!("{}", parser_manager.buffer);
+                            // parser_tx.send(ParserMsg::Content(s))?;
                         }
-                        TailMsg::NewFile => parser_tx.send(ParserMsg::NewFile)?,
+                        TailMsg::NewFile => {
+                            parser_manager.buffer.clear();
+                            parser_tx.send(ParserMsg::NewFile)?;
+                        }
+                        TailMsg::Stop => break,
                     }
                 }
                 Err(TryRecvError::Empty) => {}
@@ -320,6 +349,10 @@ impl Parser {
             limiter.might_sleep();
         }
 
+        Ok(())
+    }
+
+    fn parse() -> anyhow::Result<()> {
         Ok(())
     }
 }
