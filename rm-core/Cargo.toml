@@ -10,7 +10,8 @@ glam = { version = "0.28.0", features = ["serde"] }
 log = "0.4.21"
 might_sleep = "0.2.0"
 notify = "6.1.1"
-regex = "1.10.4"
+regex = "1.10.5"
 ron = "0.8.1"
 serde = { version = "1.0.201", features = ["derive"] }
+strum = { version = "0.26.3", features = ["derive"] }
 walkdir = "2.5.0"

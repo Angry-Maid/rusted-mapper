@@ -1,8 +1,12 @@
-use std::{sync::mpsc::TryRecvError, time::Duration};
+use std::{
+    sync::{mpsc::TryRecvError, Arc},
+    time::Duration,
+};
 
 use egui::{scroll_area::ScrollBarVisibility, Align, Color32, Frame, ScrollArea};
+use itertools::zip;
 use log::debug;
-use rm_core::parser::Parser;
+use rm_core::parser::{Level, Parser};
 use serde::{self, Deserialize, Serialize};
 
 use crate::built_info;
@@ -16,14 +20,20 @@ pub struct Mapper {
     log_buffer: Vec<String>,
     #[serde(skip)]
     scroll_to_bottom: bool,
+    #[serde(skip)]
+    seeds: Option<[u32; 3]>,
+    #[serde(skip)]
+    expedition: Option<Arc<Level>>,
 }
 
 impl Default for Mapper {
     fn default() -> Self {
         Self {
             parser: Parser::new(None),
-            log_buffer: Default::default(),
             scroll_to_bottom: true,
+            log_buffer: Default::default(),
+            seeds: None,
+            expedition: Default::default(),
         }
     }
 }
@@ -45,12 +55,24 @@ impl eframe::App for Mapper {
         let data_msg = &self.parser.rx.as_ref().unwrap().try_recv();
         match data_msg {
             Ok(msg) => match msg {
-                rm_core::parser::ParserMsg::NewFile => self.log_buffer.clear(),
-                rm_core::parser::ParserMsg::LevelInit(_) => todo!(),
-                rm_core::parser::ParserMsg::Gatherable(_) => todo!(),
-                rm_core::parser::ParserMsg::LevelStart => todo!(),
-                rm_core::parser::ParserMsg::ZoneDoorOpened => todo!(),
-                rm_core::parser::ParserMsg::LevelFinish => todo!(),
+                rm_core::parser::ParserMsg::NewFile => {
+                    self.log_buffer.clear();
+                    self.seeds = None;
+                    self.expedition = None;
+                }
+                rm_core::parser::ParserMsg::LevelSeeds(build_seed, host_seed, session_seed) => {
+                    self.seeds = Some([*build_seed, *host_seed, *session_seed]);
+                }
+                rm_core::parser::ParserMsg::LevelInit(level) => {
+                    self.expedition = Some(level.to_owned());
+                }
+                // rm_core::parser::ParserMsg::Gatherable(_) => todo!(),
+                // rm_core::parser::ParserMsg::LevelStart => todo!(),
+                // rm_core::parser::ParserMsg::ZoneDoorOpened => todo!(),
+                // rm_core::parser::ParserMsg::LevelFinish => todo!(),
+                _ => {
+                    debug!("{msg:?}");
+                }
             },
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => debug!("Got disconnect from tail_data_rx"),
@@ -102,6 +124,22 @@ impl eframe::App for Mapper {
             })
             .show(ctx, |ui| {
                 ui.heading("Rusted Warden Mapper");
+
+                ui.separator();
+
+                if let Some(values) = &self.seeds {
+                    ui.vertical(|ui| {
+                        for (label, seed) in
+                            zip(vec!["Build Seed", "Host Seed", "Session Seed"], values)
+                        {
+                            ui.label(format!("{label}: {seed}"));
+                        }
+                    });
+                }
+
+                if let Some(level) = &self.expedition {
+                    ui.label(format!("Selected Expedition: {}", level.display_name()));
+                }
 
                 ScrollArea::vertical()
                     .auto_shrink(false)

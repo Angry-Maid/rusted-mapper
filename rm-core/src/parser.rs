@@ -1,20 +1,24 @@
 use std::{
     default,
     path::{Path, PathBuf},
-    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    sync::{
+        mpsc::{channel, Receiver, Sender, TryRecvError},
+        Arc,
+    },
     thread,
     time::Duration,
 };
 
 use chrono::NaiveTime;
 use glam::Vec2;
-use log::{error, info};
+use log::{debug, error, info};
 use might_sleep::cpu_limiter::CpuLimiter;
 use notify::{
-    event::{CreateKind, DataChange, ModifyKind, RenameMode},
+    event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode},
     recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use serde::{Deserialize, Serialize};
+use strum::FromRepr;
 use walkdir::WalkDir;
 
 use crate::tail::{Tail, TailCmd, TailMsg};
@@ -25,7 +29,7 @@ pub struct Zone {
     pub local: u32,
     pub dimension: String,
     pub layer: String,
-    pub subzone: Option<char>,
+    pub area: Option<char>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,12 +59,38 @@ pub enum InvarianceMethod {
     ByGatherable(ItemIdentifier),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(FromRepr, Debug, Default, Serialize, Deserialize)]
+#[repr(u32)]
+pub enum Rundown {
+    R7 = 31,
+    #[default]
+    R1 = 32,
+    R2 = 33,
+    R3 = 34,
+    R8 = 35,
+    R4 = 37,
+    R5 = 38,
+    R6 = 41,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Level {
-    pub name: String,
+    pub rundown: Rundown,
+    pub exp_name: String,
     pub gathatable_items: Vec<GatherItem>,
     pub zones: Vec<TimerEntry>,
     pub maps: Vec<GatherableMap>,
+}
+
+impl Level {
+    pub fn display_name(&self) -> String {
+        let exp_name = if self.exp_name != "E3" {
+            &self.exp_name
+        } else {
+            &"E2".to_string()
+        };
+        format!("{:?}{}", self.rundown, exp_name)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -112,7 +142,8 @@ pub enum GatherItem {
     Cargo(Zone, String),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(FromRepr, Debug, Serialize, Deserialize)]
+#[repr(u32)]
 pub enum ItemIdentifier {
     ID = 128,
     PD = 129,
@@ -125,6 +156,7 @@ pub enum ItemIdentifier {
     Datasphere = 151,
     PlantSample = 153,
     HiSec = 154,
+    DataCubeR8 = 165,
     DataCube = 168,
     GLP2 = 169,
     Cargo = 176,
@@ -134,42 +166,51 @@ pub mod re {
     use regex::Regex;
     use std::sync::LazyLock;
 
-    pub static BUILD_START: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^.*Builder\.Build.*buildSeed:\s(?P<build>\d+)\shostIDSeed:\s(?P<hostId>\d+)\ssessionSeed:\s(?P<session>\d+)$").unwrap()
+    pub static BUILDER_LEVEL_SEEDS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^.*Builder\.Build.*buildSeed:\s(?<build>\d+)\shostIDSeed:\s(?<hostId>\d+)\ssessionSeed:\s(?<session>\d+).*$").unwrap()
+    });
+
+    pub static DROP_SERVER_MANAGER_NEW_SESSION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^.*ServerManager:\s'new\ssession.*?rundown:\sLocal_(?<rundown_idx>\d+),\sexpedition:\s(?<rundown_exp>\w\d).*$").unwrap()
     });
 
     pub static BUILD_END: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^.*BUILDER\s:\sBuildDone$").unwrap());
 
     pub static SPLIT_TIME: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})\.(?P<millis>\d{3}).*$").unwrap()
+        Regex::new(r"^(?<h>\d{2}):(?<m>\d{2}):(?<s>\d{2})\.(?<millis>\d{3}).*$").unwrap()
     });
+
     pub static ZONE_CREATED: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r"^.*?Alias: (?P<alias>\d+).*aliasOffset: \w+_(?P<local>\d+).*\s.*?Zone\sCreated.*?in\s(?P<dim>\w+)\s(?P<layer>\w+).*$"
+            r"^.*?Alias: (?<alias>\d+).*aliasOffset: \w+_(?<local>\d+).*\s.*?Zone\sCreated.*?in\s(?<dim>\w+)\s(?<layer>\w+).*$"
         )
         .unwrap()
     });
+
     pub static CREATE_KEY_ITEM_DISTRIBUTION: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(concat!(
-            r"^.*?PublicName:\s(?P<key>[A-Za-z0-9_]+).*?DimensionIndex:\s(?P<dim>\w+)\sLocalIndex:\s\w+_(?P<local>\d+).*?", // CreateKeyItemDistribution
-            r"(?:\s|.*)*?",                                               // Discard
-            r"TryGetExisting.*?ZONE(?P<alias>\d+).*?ri:\s(?P<ri>\d+).*$", // TryGetExistingGenericFunctionDistributionForSession
+            r"^.*?PublicName:\s(?<key>[A-Za-z0-9_]+).*?DimensionIndex:\s(?<dim>\w+)\sLocalIndex:\s\w+_(?<local>\d+).*?", // CreateKeyItemDistribution
+            r"(?:\s|.*)*?",                                             // Discard
+            r"TryGetExisting.*?ZONE(?<alias>\d+).*?ri:\s(?<ri>\d+).*$", // TryGetExistingGenericFunctionDistributionForSession
         ))
         .unwrap()
     });
+
     pub static DISTRIBUTE_HSU: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^.*zone:\s(?P<alias>\d+),\sArea:\s(?P<id>\d+)_\w+\s(?P<area>\w+).*$").unwrap()
+        Regex::new(r"^.*zone:\s(?<alias>\d+),\sArea:\s(?<id>\d+)_\w+\s(?<area>\w+).*$").unwrap()
     });
+
     pub static DISTRIBUTE_WARDEN_OBJECTIVE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r"^.*?zone\sZONE(?P<alias>\d+).*?Index:\s(?P<idx>\d+).*\n.*?itemID:\s(?P<item>\d+).*$",
+            r"^.*?zone\sZONE(?<alias>\d+).*?Index:\s(?<idx>\d+).*\n.*?itemID:\s(?<item>\d+).*$",
         )
         .unwrap()
     });
+
     pub static WARDEN_OBJECTIVE_MANAGER: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r"^(?P<gen>.*LG_PowerGenerator_Graphics.OnSyncStatusChanged.*)?\s?(?:.*?Collection\s(?P<id>\d+)\s.*?\s(?P<name>\w+_\d+))$"
+            r"^(?<gen>.*LG_PowerGenerator_Graphics.OnSyncStatusChanged.*)?\s?(?:.*?Collection\s(?<id>\d+)\s.*?\s(?<name>\w+_\d+))$"
         )
         .unwrap()
     });
@@ -179,18 +220,20 @@ pub mod re {
 pub struct Parser {
     watch_path: PathBuf,
     dir_watcher: Option<RecommendedWatcher>,
-    tail_cmd_tx: Option<Sender<TailCmd>>,
+    pub tail_cmd_tx: Option<Sender<TailCmd>>,
     tail: Option<Tail>,
     pub rx: Option<Receiver<ParserMsg>>,
 }
 
 #[derive(Debug)]
 pub enum ParserMsg {
-    LevelInit(Level),
+    LevelSeeds(u32, u32, u32),
+    LevelInit(Arc<Level>),
     Gatherable(GatherItem),
     LevelStart,
     ZoneDoorOpened,
     LevelFinish,
+
     NewFile,
 }
 
@@ -198,17 +241,29 @@ pub enum ParserMsg {
 enum ParserState {
     #[default]
     Initial,
+    LevelSeeds,
+    LevelSelected(u32, String),
     LevelGenerationStart,
     LevelGenerationFinish,
     ElevatorDropFinish,
     LevelFinish,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ParserManager {
-    buffer: String,
-    pos: usize,
-    state: ParserState,
+    pub buffer: String,
+    pub pos: usize,
+    pub state: ParserState,
+}
+
+impl Default for ParserManager {
+    fn default() -> Self {
+        Self {
+            buffer: "".into(),
+            pos: 0,
+            state: Default::default(),
+        }
+    }
 }
 
 impl Parser {
@@ -236,12 +291,14 @@ impl Parser {
 
         let (parser_tx, parser_rx) = channel::<ParserMsg>();
 
-        self.tail_cmd_tx.replace(command_tx.clone());
+        self.tail_cmd_tx = Some(command_tx.clone());
         self.rx = Some(parser_rx);
+
+        let tail_cmd = command_tx.clone();
 
         thread::Builder::new()
             .name("parser".into())
-            .spawn(|| Parser::parser(data_rx, parser_tx))?;
+            .spawn(|| Parser::parser(data_rx, parser_tx, tail_cmd))?;
 
         // We first look for `NICKNAME_NETSTATUS` file in case
         // rusted-mapper was opened after the game was open.
@@ -286,16 +343,27 @@ impl Parser {
                                 None => {}
                             }
                         }
-                        info!(
-                            "Filename: {:?}",
-                            event.paths.first().unwrap().file_name().unwrap()
-                        );
                     }
                     notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)) => {
                         // On new data in file <- doesn't work cause lib uses `ReadDirectoryChangesW`
                     }
                     notify::EventKind::Modify(ModifyKind::Name(RenameMode::Any)) => {
                         // On file rename ???
+                    }
+                    notify::EventKind::Remove(RemoveKind::Any) => {
+                        // if let Some(path) = event.paths.first() {
+                        //     match path.file_name() {
+                        //         Some(filename) => {
+                        //             if match filename.to_str() {
+                        //                 Some(val) => val.contains("NICKNAME_NETSTATUS"),
+                        //                 None => false,
+                        //             } {
+                        //                 command_tx.send(TailCmd::Open(path.to_path_buf())).unwrap();
+                        //             }
+                        //         }
+                        //         None => {}
+                        //     }
+                        // }
                     }
                     _ => {}
                 }
@@ -316,9 +384,11 @@ impl Parser {
         Ok(())
     }
 
-    pub fn parser(data_rx: Receiver<TailMsg>, parser_tx: Sender<ParserMsg>) -> anyhow::Result<()> {
-        // Inner state manager
-
+    pub fn parser(
+        data_rx: Receiver<TailMsg>,
+        parser_tx: Sender<ParserMsg>,
+        tail_cmd_tx: Sender<TailCmd>,
+    ) -> anyhow::Result<()> {
         let mut limiter = CpuLimiter::new(Duration::from_millis(250));
         let mut parser_manager = ParserManager::default();
 
@@ -329,11 +399,72 @@ impl Parser {
                     match val {
                         TailMsg::Content(s) => {
                             parser_manager.buffer.extend(s.chars());
-                            info!("{}", parser_manager.buffer);
-                            // parser_tx.send(ParserMsg::Content(s))?;
+
+                            // Check for level end trigger/level de-init.
+                            if false {
+                                todo!();
+                                continue;
+                            }
+
+                            match parser_manager.state {
+                                ParserState::Initial => {
+                                    if let Some(ref cap) = re::BUILDER_LEVEL_SEEDS
+                                        .captures_iter(&parser_manager.buffer)
+                                        .last()
+                                    {
+                                        let (_, [buildSeed, hostSeed, sessionSeed]) = cap.extract();
+                                        parser_manager.pos = cap.get(0).unwrap().end();
+
+                                        let build_seed = buildSeed.parse::<u32>()?;
+                                        let host_seed = hostSeed.parse::<u32>()?;
+                                        let session_seed = sessionSeed.parse::<u32>()?;
+
+                                        parser_tx.send(ParserMsg::LevelSeeds(
+                                            build_seed,
+                                            host_seed,
+                                            session_seed,
+                                        ))?;
+
+                                        parser_manager.state = ParserState::LevelSeeds;
+
+                                        tail_cmd_tx.send(TailCmd::ForceUpdate)?;
+                                    }
+                                }
+                                ParserState::LevelSeeds => {
+                                    if let Some(cap) = re::DROP_SERVER_MANAGER_NEW_SESSION
+                                        .captures_iter(&parser_manager.buffer)
+                                        .last()
+                                    {
+                                        let (_, [rundown_idx, rundown_exp]) = cap.extract();
+                                        parser_manager.pos = cap.get(0).unwrap().end();
+
+                                        let rundown_idx = rundown_idx.parse::<u32>()?;
+                                        let rundown_exp = rundown_exp.to_string();
+
+                                        // TODO: Load level file if it already exists.
+
+                                        parser_tx.send(ParserMsg::LevelInit(Arc::new(Level {
+                                            rundown: Rundown::from_repr(rundown_idx).unwrap(),
+                                            exp_name: rundown_exp.clone(),
+                                            ..Default::default()
+                                        })))?;
+
+                                        parser_manager.state =
+                                            ParserState::LevelSelected(rundown_idx, rundown_exp);
+                                    }
+                                }
+                                ParserState::LevelSelected(idx, ref exp) => {
+                                    // dbg!(idx, exp);
+                                }
+                                ParserState::LevelGenerationStart => todo!(),
+                                ParserState::LevelGenerationFinish => todo!(),
+                                ParserState::ElevatorDropFinish => todo!(),
+                                ParserState::LevelFinish => todo!(),
+                            }
                         }
                         TailMsg::NewFile => {
                             parser_manager.buffer.clear();
+                            parser_manager.state = ParserState::Initial;
                             parser_tx.send(ParserMsg::NewFile)?;
                         }
                         TailMsg::Stop => break,
@@ -349,10 +480,6 @@ impl Parser {
             limiter.might_sleep();
         }
 
-        Ok(())
-    }
-
-    fn parse() -> anyhow::Result<()> {
         Ok(())
     }
 }

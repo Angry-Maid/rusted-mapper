@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone)]
 pub enum TailCmd {
     Open(PathBuf),
+    ForceUpdate,
     Stop,
 }
 
@@ -58,10 +59,11 @@ impl Tail {
                         data_tx.send(TailMsg::NewFile)?;
                     }
                     TailCmd::Stop => {
-                        data_tx.send(TailMsg::Stop);
+                        data_tx.send(TailMsg::Stop)?;
                         info!("Tail channel got command stop, stopping thread.");
                         break;
                     }
+                    TailCmd::ForceUpdate => data_tx.send(TailMsg::Content("".into()))?,
                 },
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {

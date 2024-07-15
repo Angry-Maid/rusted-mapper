@@ -1,8 +1,6 @@
 #![feature(duration_constructors)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::time::Duration;
-
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 use rm_gui::built_info;
@@ -15,7 +13,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([330.0, 550.0])
             .with_min_inner_size([330.0, 550.0])
-            .with_position([0.0, 300.0])
+            .with_position([1.0, 300.0])
             .with_decorations(false)
             .with_transparent(true)
             .with_window_level(egui::WindowLevel::AlwaysOnTop),
