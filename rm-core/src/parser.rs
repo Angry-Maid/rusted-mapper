@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc,
+        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -23,10 +23,10 @@ use walkdir::WalkDir;
 
 use crate::tail::{Tail, TailCmd, TailMsg};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Zone {
-    pub alias: u32,
-    pub local: u32,
+    pub alias: u16,
+    pub local: u16,
     pub dimension: String,
     pub layer: String,
     pub area: Option<char>,
@@ -39,7 +39,7 @@ pub struct Record {
     pub zone: Option<Zone>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum TimerEntry {
     Start,
     Zone(Zone),
@@ -47,7 +47,7 @@ pub enum TimerEntry {
     End,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 pub enum InvarianceMethod {
     #[default]
     All,
@@ -59,11 +59,12 @@ pub enum InvarianceMethod {
     ByGatherable(ItemIdentifier),
 }
 
-#[derive(FromRepr, Debug, Default, Serialize, Deserialize)]
-#[repr(u32)]
+#[derive(FromRepr, Debug, Default, Serialize, Deserialize, Clone)]
+#[repr(u8)]
 pub enum Rundown {
-    R7 = 31,
     #[default]
+    Modded,
+    R7 = 31,
     R1 = 32,
     R2 = 33,
     R3 = 34,
@@ -73,7 +74,7 @@ pub enum Rundown {
     R6 = 41,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Level {
     pub rundown: Rundown,
     pub exp_name: String,
@@ -83,17 +84,21 @@ pub struct Level {
 }
 
 impl Level {
+    // TODO: impl fn on Level to load level from file
+
     pub fn display_name(&self) -> String {
-        let exp_name = if self.exp_name != "E3" {
-            &self.exp_name
-        } else {
-            &"E2".to_string()
-        };
-        format!("{:?}{}", self.rundown, exp_name)
+        format!(
+            "{:?}{}",
+            self.rundown,
+            (self.exp_name != "E3")
+                .then(|| &self.exp_name)
+                .or(Some(&"E3".to_string()))
+                .unwrap()
+        )
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GatherableMap {
     pub outline_poly: Vec<Vec2>,
     pub blockouts: Vec<[Vec2; 4]>,
@@ -102,7 +107,7 @@ pub struct GatherableMap {
 /// Main enum which keeps list of all gatherable items in game and related data to them
 /// Keys and Bulkhead Keys and HSU don't have item ID and/or have separate algorithm of
 /// generating and are dependant on some internal datablocks(?).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum GatherItem {
     /// Zone, Name
     Key(Zone, String),
@@ -142,8 +147,8 @@ pub enum GatherItem {
     Cargo(Zone, String),
 }
 
-#[derive(FromRepr, Debug, Serialize, Deserialize)]
-#[repr(u32)]
+#[derive(FromRepr, Debug, Serialize, Deserialize, Clone)]
+#[repr(u8)]
 pub enum ItemIdentifier {
     ID = 128,
     PD = 129,
@@ -166,12 +171,30 @@ pub mod re {
     use regex::Regex;
     use std::sync::LazyLock;
 
+    /// At the start of level gen - get the seed info
     pub static BUILDER_LEVEL_SEEDS: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?m)^.*Builder\.Build.*buildSeed:\s(?<build>\d+)\shostIDSeed:\s(?<hostId>\d+)\ssessionSeed:\s(?<session>\d+).*$").unwrap()
     });
 
+    /// At the start of level gen - get the level info
     pub static DROP_SERVER_MANAGER_NEW_SESSION: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?m)^.*ServerManager:\s'new\ssession.*?rundown:\sLocal_(?<rundown_idx>\d+),\sexpedition:\s(?<rundown_exp>\w\d).*$").unwrap()
+    });
+
+    /// SetupFloor batch start
+    pub static SETUP_FLOOR_BATCH_START: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^Next\sBatch:\sSetupFloor.*$").unwrap());
+
+    /// SetupFloor batch end
+    pub static SETUP_FLOOR_BATCH_END: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^.*Last\sBatch:\sSetupFloor.*$").unwrap());
+
+    /// Zone info inside SetupFloor batch
+    pub static ZONE_CREATED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?m)^.*?Alias: (?<alias>\d+).*aliasOffset: \w+_(?<local>\d+).*\s.*?Zone\sCreated.*?in\s(?<dim>\w+)\s(?<layer>\w+).*$"
+        )
+        .unwrap()
     });
 
     pub static BUILD_END: LazyLock<Regex> =
@@ -179,13 +202,6 @@ pub mod re {
 
     pub static SPLIT_TIME: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"^(?<h>\d{2}):(?<m>\d{2}):(?<s>\d{2})\.(?<millis>\d{3}).*$").unwrap()
-    });
-
-    pub static ZONE_CREATED: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"^.*?Alias: (?<alias>\d+).*aliasOffset: \w+_(?<local>\d+).*\s.*?Zone\sCreated.*?in\s(?<dim>\w+)\s(?<layer>\w+).*$"
-        )
-        .unwrap()
     });
 
     pub static CREATE_KEY_ITEM_DISTRIBUTION: LazyLock<Regex> = LazyLock::new(|| {
@@ -228,7 +244,7 @@ pub struct Parser {
 #[derive(Debug)]
 pub enum ParserMsg {
     LevelSeeds(u32, u32, u32),
-    LevelInit(Arc<Level>),
+    LevelInit(Arc<Mutex<Level>>),
     Gatherable(GatherItem),
     LevelStart,
     ZoneDoorOpened,
@@ -242,9 +258,8 @@ enum ParserState {
     #[default]
     Initial,
     LevelSeeds,
-    LevelSelected(u32, String),
-    LevelGenerationStart,
-    LevelGenerationFinish,
+    LevelSelected(Arc<Mutex<Level>>),
+    LevelGeneration,
     ElevatorDropFinish,
     LevelFinish,
 }
@@ -412,12 +427,13 @@ impl Parser {
                                         .captures_iter(&parser_manager.buffer)
                                         .last()
                                     {
-                                        let (_, [buildSeed, hostSeed, sessionSeed]) = cap.extract();
+                                        let (_, [build_seed, host_seed, session_seed]) =
+                                            cap.extract();
                                         parser_manager.pos = cap.get(0).unwrap().end();
 
-                                        let build_seed = buildSeed.parse::<u32>()?;
-                                        let host_seed = hostSeed.parse::<u32>()?;
-                                        let session_seed = sessionSeed.parse::<u32>()?;
+                                        let build_seed = build_seed.parse::<u32>()?;
+                                        let host_seed = host_seed.parse::<u32>()?;
+                                        let session_seed = session_seed.parse::<u32>()?;
 
                                         parser_tx.send(ParserMsg::LevelSeeds(
                                             build_seed,
@@ -426,8 +442,6 @@ impl Parser {
                                         ))?;
 
                                         parser_manager.state = ParserState::LevelSeeds;
-
-                                        tail_cmd_tx.send(TailCmd::ForceUpdate)?;
                                     }
                                 }
                                 ParserState::LevelSeeds => {
@@ -438,26 +452,61 @@ impl Parser {
                                         let (_, [rundown_idx, rundown_exp]) = cap.extract();
                                         parser_manager.pos = cap.get(0).unwrap().end();
 
-                                        let rundown_idx = rundown_idx.parse::<u32>()?;
+                                        let rundown_idx = rundown_idx.parse::<u8>()?;
                                         let rundown_exp = rundown_exp.to_string();
 
-                                        // TODO: Load level file if it already exists.
-
-                                        parser_tx.send(ParserMsg::LevelInit(Arc::new(Level {
+                                        let level = Arc::new(Mutex::new(Level {
                                             rundown: Rundown::from_repr(rundown_idx).unwrap(),
                                             exp_name: rundown_exp.clone(),
                                             ..Default::default()
-                                        })))?;
+                                        }));
 
-                                        parser_manager.state =
-                                            ParserState::LevelSelected(rundown_idx, rundown_exp);
+                                        parser_tx.send(ParserMsg::LevelInit(level.clone()))?;
+
+                                        parser_manager.state = ParserState::LevelSelected(level);
                                     }
                                 }
-                                ParserState::LevelSelected(idx, ref exp) => {
-                                    // dbg!(idx, exp);
+                                ParserState::LevelSelected(ref level) => {
+                                    // TODO: add check if level already exists as file and load zones from file
+
+                                    let (batch_start, batch_end) = (
+                                        re::SETUP_FLOOR_BATCH_START
+                                            .captures_iter(&parser_manager.buffer)
+                                            .last()
+                                            .and_then(|c| c.get(0))
+                                            .and_then(|m| Some(m.start())),
+                                        re::SETUP_FLOOR_BATCH_END
+                                            .captures_iter(&parser_manager.buffer)
+                                            .last()
+                                            .and_then(|c| c.get(0))
+                                            .and_then(|m| Some(m.end())),
+                                    );
+
+                                    if let (Some(start), Some(end)) = (batch_start, batch_end) {
+                                        {
+                                            let mut data = level.lock().unwrap();
+                                            for cap in re::ZONE_CREATED
+                                                .captures_iter(&parser_manager.buffer[start..end])
+                                            {
+                                                dbg!(&cap);
+
+                                                let (_, [alias, local, dim, layer]) = cap.extract();
+                                                let zone = Zone {
+                                                    alias: alias.parse::<u16>()?,
+                                                    local: local.parse::<u16>()?,
+                                                    dimension: dim.to_string(),
+                                                    layer: layer.to_string(),
+                                                    area: None,
+                                                };
+                                                (*data).zones.push(TimerEntry::Zone(zone));
+                                            }
+                                        }
+                                        parser_manager.state = ParserState::LevelGeneration;
+                                    }
                                 }
-                                ParserState::LevelGenerationStart => todo!(),
-                                ParserState::LevelGenerationFinish => todo!(),
+                                ParserState::LevelGeneration => {
+                                    // TODO: Lel
+                                }
                                 ParserState::ElevatorDropFinish => todo!(),
                                 ParserState::LevelFinish => todo!(),
                             }

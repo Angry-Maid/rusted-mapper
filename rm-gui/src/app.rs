@@ -1,11 +1,11 @@
 use std::{
-    sync::{mpsc::TryRecvError, Arc},
+    iter::zip,
+    sync::{mpsc::TryRecvError, Arc, Mutex},
     time::Duration,
 };
 
 use egui::{scroll_area::ScrollBarVisibility, Align, Color32, Frame, ScrollArea};
-use itertools::zip;
-use log::debug;
+use log::{debug, error};
 use rm_core::parser::{Level, Parser};
 use serde::{self, Deserialize, Serialize};
 
@@ -23,7 +23,7 @@ pub struct Mapper {
     #[serde(skip)]
     seeds: Option<[u32; 3]>,
     #[serde(skip)]
-    expedition: Option<Arc<Level>>,
+    expedition: Option<Arc<Mutex<Level>>>,
 }
 
 impl Default for Mapper {
@@ -137,10 +137,6 @@ impl eframe::App for Mapper {
                     });
                 }
 
-                if let Some(level) = &self.expedition {
-                    ui.label(format!("Selected Expedition: {}", level.display_name()));
-                }
-
                 ScrollArea::vertical()
                     .auto_shrink(false)
                     .scroll_bar_visibility(ScrollBarVisibility::VisibleWhenNeeded)
@@ -148,8 +144,35 @@ impl eframe::App for Mapper {
                         ui.with_layout(
                             egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(true),
                             |ui| {
-                                for line in &self.log_buffer {
-                                    ui.label(line.to_owned());
+                                if let Some(expedition) = &self.expedition {
+                                    match expedition.try_lock() {
+                                        Ok(level) => {
+                                            ui.label(format!(
+                                                "Selected Expedition: {}",
+                                                (*level).display_name()
+                                            ));
+                                            for zone in &(*level).zones {
+                                                match zone {
+                                                    rm_core::parser::TimerEntry::Start => {}
+                                                    rm_core::parser::TimerEntry::Zone(z) => {
+                                                        ui.label(format!(
+                                                            "ZONE_{} {} {}",
+                                                            z.alias, z.layer, z.dimension
+                                                        ));
+                                                    }
+                                                    rm_core::parser::TimerEntry::Invariance(
+                                                        _,
+                                                        _,
+                                                    ) => {}
+                                                    rm_core::parser::TimerEntry::End => todo!(),
+                                                }
+                                            }
+                                        }
+                                        Err(std::sync::TryLockError::Poisoned(_)) => {
+                                            error!("Level Mutex was poisoned!");
+                                        }
+                                        Err(std::sync::TryLockError::WouldBlock) => {}
+                                    }
                                 }
                             },
                         );
