@@ -147,11 +147,8 @@ impl eframe::App for Mapper {
                                 if let Some(expedition) = &self.expedition {
                                     match expedition.try_lock() {
                                         Ok(level) => {
-                                            ui.label(format!(
-                                                "Selected Expedition: {}",
-                                                (*level).display_name()
-                                            ));
-                                            for zone in &(*level).zones {
+                                            ui.label(format!("Selected Expedition: {}", level));
+                                            for zone in &level.zones {
                                                 match zone {
                                                     rm_core::parser::TimerEntry::Start => {}
                                                     rm_core::parser::TimerEntry::Zone(z) => {

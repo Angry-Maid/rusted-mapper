@@ -1,5 +1,5 @@
 use std::{
-    default,
+    fmt::Display,
     path::{Path, PathBuf},
     sync::{
         mpsc::{channel, Receiver, Sender, TryRecvError},
@@ -11,7 +11,7 @@ use std::{
 
 use chrono::NaiveTime;
 use glam::Vec2;
-use log::{debug, error, info};
+use log::{error, info};
 use might_sleep::cpu_limiter::CpuLimiter;
 use notify::{
     event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode},
@@ -59,6 +59,7 @@ pub enum InvarianceMethod {
     ByGatherable(ItemIdentifier),
 }
 
+/// Values are corelated to the R8 live build
 #[derive(FromRepr, Debug, Default, Serialize, Deserialize, Clone)]
 #[repr(u8)]
 pub enum Rundown {
@@ -83,19 +84,19 @@ pub struct Level {
     pub maps: Vec<GatherableMap>,
 }
 
+impl Display for Level {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let expedition = if self.exp_name != "E3" {
+            &self.exp_name
+        } else {
+            &"E2".to_string()
+        };
+        write!(f, "{:?}{}", self.rundown, expedition)
+    }
+}
+
 impl Level {
     // TODO: impl fn on Level to load level from file
-
-    pub fn display_name(&self) -> String {
-        format!(
-            "{:?}{}",
-            self.rundown,
-            (self.exp_name != "E3")
-                .then(|| &self.exp_name)
-                .or(Some(&"E3".to_string()))
-                .unwrap()
-        )
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -309,15 +310,13 @@ impl Parser {
         self.tail_cmd_tx = Some(command_tx.clone());
         self.rx = Some(parser_rx);
 
-        let tail_cmd = command_tx.clone();
-
         thread::Builder::new()
             .name("parser".into())
-            .spawn(|| Parser::parser(data_rx, parser_tx, tail_cmd))?;
+            .spawn(|| Parser::parser(data_rx, parser_tx))?;
 
         // We first look for `NICKNAME_NETSTATUS` file in case
         // rusted-mapper was opened after the game was open.
-        for entry in WalkDir::new(self.watch_path.clone().as_path().to_owned())
+        for entry in WalkDir::new(self.watch_path.clone().as_path())
             .min_depth(1)
             .max_depth(1)
             .sort_by(|a, b| {
@@ -327,16 +326,17 @@ impl Parser {
                     .unwrap()
                     .cmp(&a.metadata().unwrap().modified().unwrap())
             })
+            .into_iter()
+            .flatten()
         {
-            if let Ok(dir_entry) = entry {
-                info!("{:?}", dir_entry.file_name());
-                if match dir_entry.file_name().to_str() {
-                    Some(val) => val.contains("NICKNAME_NETSTATUS"),
-                    None => false,
-                } {
-                    command_tx.send(TailCmd::Open(dir_entry.path().to_path_buf()))?;
-                    break;
-                }
+            info!("{:?}", entry.file_name());
+            if entry
+                .file_name()
+                .to_str()
+                .map_or(false, |v| v.contains("NICKNAME_NETSTATUS"))
+            {
+                command_tx.send(TailCmd::Open(entry.path().to_path_buf()))?;
+                break;
             }
         }
 
@@ -346,16 +346,13 @@ impl Parser {
                 match event.kind {
                     notify::EventKind::Create(CreateKind::Any) => {
                         if let Some(path) = event.paths.first() {
-                            match path.file_name() {
-                                Some(filename) => {
-                                    if match filename.to_str() {
-                                        Some(val) => val.contains("NICKNAME_NETSTATUS"),
-                                        None => false,
-                                    } {
-                                        command_tx.send(TailCmd::Open(path.to_path_buf())).unwrap();
-                                    }
+                            if let Some(filename) = path.file_name() {
+                                if filename
+                                    .to_str()
+                                    .map_or(false, |v| v.contains("NICKNAME_NETSTATUS"))
+                                {
+                                    command_tx.send(TailCmd::Open(path.to_path_buf())).unwrap();
                                 }
-                                None => {}
                             }
                         }
                     }
@@ -399,11 +396,7 @@ impl Parser {
         Ok(())
     }
 
-    pub fn parser(
-        data_rx: Receiver<TailMsg>,
-        parser_tx: Sender<ParserMsg>,
-        tail_cmd_tx: Sender<TailCmd>,
-    ) -> anyhow::Result<()> {
+    pub fn parser(data_rx: Receiver<TailMsg>, parser_tx: Sender<ParserMsg>) -> anyhow::Result<()> {
         let mut limiter = CpuLimiter::new(Duration::from_millis(250));
         let mut parser_manager = ParserManager::default();
 
@@ -413,7 +406,7 @@ impl Parser {
                     // For now we get the message and propagate it back
                     match val {
                         TailMsg::Content(s) => {
-                            parser_manager.buffer.extend(s.chars());
+                            parser_manager.buffer.push_str(s.as_str());
 
                             // Check for level end trigger/level de-init.
                             if false {
@@ -456,7 +449,8 @@ impl Parser {
                                         let rundown_exp = rundown_exp.to_string();
 
                                         let level = Arc::new(Mutex::new(Level {
-                                            rundown: Rundown::from_repr(rundown_idx).unwrap(),
+                                            rundown: Rundown::from_repr(rundown_idx)
+                                                .unwrap_or(Rundown::Modded),
                                             exp_name: rundown_exp.clone(),
                                             ..Default::default()
                                         }));
@@ -474,12 +468,12 @@ impl Parser {
                                             .captures_iter(&parser_manager.buffer)
                                             .last()
                                             .and_then(|c| c.get(0))
-                                            .and_then(|m| Some(m.start())),
+                                            .map(|m| m.start()),
                                         re::SETUP_FLOOR_BATCH_END
                                             .captures_iter(&parser_manager.buffer)
                                             .last()
                                             .and_then(|c| c.get(0))
-                                            .and_then(|m| Some(m.end())),
+                                            .map(|m| m.end()),
                                     );
 
                                     if let (Some(start), Some(end)) = (batch_start, batch_end) {
@@ -498,7 +492,7 @@ impl Parser {
                                                     layer: layer.to_string(),
                                                     area: None,
                                                 };
-                                                (*data).zones.push(TimerEntry::Zone(zone));
+                                                data.zones.push(TimerEntry::Zone(zone));
                                             }
                                         }
                                         parser_manager.state = ParserState::LevelGeneration;
