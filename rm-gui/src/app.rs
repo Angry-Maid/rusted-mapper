@@ -1,11 +1,11 @@
 use std::{
     iter::zip,
-    sync::{mpsc::TryRecvError, Arc, Mutex},
+    sync::{mpsc::TryRecvError, Arc},
     time::Duration,
 };
 
 use egui::{scroll_area::ScrollBarVisibility, Align, Color32, Frame, ScrollArea};
-use log::{debug, error};
+use log::debug;
 use rm_core::parser::{Level, Parser};
 use serde::{self, Deserialize, Serialize};
 
@@ -23,7 +23,7 @@ pub struct Mapper {
     #[serde(skip)]
     seeds: Option<[u32; 3]>,
     #[serde(skip)]
-    expedition: Option<Arc<Mutex<Level>>>,
+    expedition: Option<Level>,
 }
 
 impl Default for Mapper {
@@ -65,6 +65,13 @@ impl eframe::App for Mapper {
                 }
                 rm_core::parser::ParserMsg::LevelInit(level) => {
                     self.expedition = Some(level.to_owned());
+                }
+                rm_core::parser::ParserMsg::GeneratedZone(zone) => {
+                    self.expedition
+                        .as_mut()
+                        .unwrap()
+                        .zones
+                        .push(rm_core::parser::TimerEntry::Zone(zone.to_owned()));
                 }
                 // rm_core::parser::ParserMsg::Gatherable(_) => todo!(),
                 // rm_core::parser::ParserMsg::LevelStart => todo!(),
@@ -144,31 +151,20 @@ impl eframe::App for Mapper {
                         ui.with_layout(
                             egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(true),
                             |ui| {
-                                if let Some(expedition) = &self.expedition {
-                                    match expedition.try_lock() {
-                                        Ok(level) => {
-                                            ui.label(format!("Selected Expedition: {}", level));
-                                            for zone in &level.zones {
-                                                match zone {
-                                                    rm_core::parser::TimerEntry::Start => {}
-                                                    rm_core::parser::TimerEntry::Zone(z) => {
-                                                        ui.label(format!(
-                                                            "ZONE_{} {} {}",
-                                                            z.alias, z.layer, z.dimension
-                                                        ));
-                                                    }
-                                                    rm_core::parser::TimerEntry::Invariance(
-                                                        _,
-                                                        _,
-                                                    ) => {}
-                                                    rm_core::parser::TimerEntry::End => todo!(),
-                                                }
+                                if let Some(level) = &self.expedition {
+                                    ui.label(format!("Selected Expedition: {}", level));
+                                    for zone in &level.zones {
+                                        match zone {
+                                            rm_core::parser::TimerEntry::Start => {}
+                                            rm_core::parser::TimerEntry::Zone(z) => {
+                                                ui.label(format!(
+                                                    "ZONE_{} {} {}",
+                                                    z.alias, z.layer, z.dimension
+                                                ));
                                             }
+                                            rm_core::parser::TimerEntry::Invariance(_, _) => {}
+                                            rm_core::parser::TimerEntry::End => todo!(),
                                         }
-                                        Err(std::sync::TryLockError::Poisoned(_)) => {
-                                            error!("Level Mutex was poisoned!");
-                                        }
-                                        Err(std::sync::TryLockError::WouldBlock) => {}
                                     }
                                 }
                             },

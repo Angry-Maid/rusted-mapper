@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc, Mutex,
+        Arc,
     },
     thread,
     time::Duration,
@@ -14,8 +14,8 @@ use glam::Vec2;
 use log::{error, info};
 use might_sleep::cpu_limiter::CpuLimiter;
 use notify::{
-    event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode},
-    recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode, Watcher,
+    event::CreateKind, recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode,
+    Watcher,
 };
 use serde::{Deserialize, Serialize};
 use strum::FromRepr;
@@ -25,8 +25,8 @@ use crate::tail::{Tail, TailCmd, TailMsg};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Zone {
-    pub alias: u16,
-    pub local: u16,
+    pub alias: u32,
+    pub local: u32,
     pub dimension: String,
     pub layer: String,
     pub area: Option<char>,
@@ -238,14 +238,14 @@ pub struct Parser {
     watch_path: PathBuf,
     dir_watcher: Option<RecommendedWatcher>,
     pub tail_cmd_tx: Option<Sender<TailCmd>>,
-    tail: Option<Tail>,
     pub rx: Option<Receiver<ParserMsg>>,
 }
 
 #[derive(Debug)]
 pub enum ParserMsg {
     LevelSeeds(u32, u32, u32),
-    LevelInit(Arc<Mutex<Level>>),
+    LevelInit(Level),
+    GeneratedZone(Zone),
     Gatherable(GatherItem),
     LevelStart,
     ZoneDoorOpened,
@@ -257,12 +257,13 @@ pub enum ParserMsg {
 #[derive(Debug, Default)]
 enum ParserState {
     #[default]
-    Initial,
     LevelSeeds,
-    LevelSelected(Arc<Mutex<Level>>),
+    LevelSelected,
     LevelGeneration,
+    ItemGeneration,
     ElevatorDropFinish,
     LevelFinish,
+    NotInLevel,
 }
 
 #[derive(Debug)]
@@ -294,16 +295,12 @@ impl Parser {
             watch_path: profile_path,
             dir_watcher: None,
             tail_cmd_tx: None,
-            tail: None,
             rx: None,
         }
     }
 
     pub fn start_watcher(&mut self) -> anyhow::Result<()> {
-        self.tail.replace(Tail::new());
-
-        let (command_tx, data_rx): (Sender<TailCmd>, Receiver<TailMsg>) =
-            self.tail.unwrap().start_listen()?;
+        let (command_tx, data_rx): (Sender<TailCmd>, Receiver<TailMsg>) = Tail::start_listen()?;
 
         let (parser_tx, parser_rx) = channel::<ParserMsg>();
 
@@ -343,41 +340,17 @@ impl Parser {
         let mut watcher = recommended_watcher(move |res: Result<Event, Error>| match res {
             Ok(event) => {
                 info!("{:?} {:?} {:?}", event.kind, event.attrs, event.paths);
-                match event.kind {
-                    notify::EventKind::Create(CreateKind::Any) => {
-                        if let Some(path) = event.paths.first() {
-                            if let Some(filename) = path.file_name() {
-                                if filename
-                                    .to_str()
-                                    .map_or(false, |v| v.contains("NICKNAME_NETSTATUS"))
-                                {
-                                    command_tx.send(TailCmd::Open(path.to_path_buf())).unwrap();
-                                }
+                if let notify::EventKind::Create(CreateKind::Any) = event.kind {
+                    if let Some(path) = event.paths.first() {
+                        if let Some(filename) = path.file_name() {
+                            if filename
+                                .to_str()
+                                .map_or(false, |v| v.contains("NICKNAME_NETSTATUS"))
+                            {
+                                command_tx.send(TailCmd::Open(path.to_path_buf())).unwrap();
                             }
                         }
                     }
-                    notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)) => {
-                        // On new data in file <- doesn't work cause lib uses `ReadDirectoryChangesW`
-                    }
-                    notify::EventKind::Modify(ModifyKind::Name(RenameMode::Any)) => {
-                        // On file rename ???
-                    }
-                    notify::EventKind::Remove(RemoveKind::Any) => {
-                        // if let Some(path) = event.paths.first() {
-                        //     match path.file_name() {
-                        //         Some(filename) => {
-                        //             if match filename.to_str() {
-                        //                 Some(val) => val.contains("NICKNAME_NETSTATUS"),
-                        //                 None => false,
-                        //             } {
-                        //                 command_tx.send(TailCmd::Open(path.to_path_buf())).unwrap();
-                        //             }
-                        //         }
-                        //         None => {}
-                        //     }
-                        // }
-                    }
-                    _ => {}
                 }
             }
             Err(e) => error!("{e:?}"),
@@ -415,7 +388,7 @@ impl Parser {
                             }
 
                             match parser_manager.state {
-                                ParserState::Initial => {
+                                ParserState::LevelSeeds => {
                                     if let Some(ref cap) = re::BUILDER_LEVEL_SEEDS
                                         .captures_iter(&parser_manager.buffer)
                                         .last()
@@ -434,10 +407,10 @@ impl Parser {
                                             session_seed,
                                         ))?;
 
-                                        parser_manager.state = ParserState::LevelSeeds;
+                                        parser_manager.state = ParserState::LevelSelected;
                                     }
                                 }
-                                ParserState::LevelSeeds => {
+                                ParserState::LevelSelected => {
                                     if let Some(cap) = re::DROP_SERVER_MANAGER_NEW_SESSION
                                         .captures_iter(&parser_manager.buffer)
                                         .last()
@@ -448,19 +421,19 @@ impl Parser {
                                         let rundown_idx = rundown_idx.parse::<u8>()?;
                                         let rundown_exp = rundown_exp.to_string();
 
-                                        let level = Arc::new(Mutex::new(Level {
+                                        let level = Level {
                                             rundown: Rundown::from_repr(rundown_idx)
                                                 .unwrap_or(Rundown::Modded),
                                             exp_name: rundown_exp.clone(),
                                             ..Default::default()
-                                        }));
+                                        };
 
-                                        parser_tx.send(ParserMsg::LevelInit(level.clone()))?;
+                                        parser_tx.send(ParserMsg::LevelInit(level))?;
 
-                                        parser_manager.state = ParserState::LevelSelected(level);
+                                        parser_manager.state = ParserState::LevelGeneration;
                                     }
                                 }
-                                ParserState::LevelSelected(ref level) => {
+                                ParserState::LevelGeneration => {
                                     // TODO: add check if level already exists as file and load zones from file
 
                                     let (batch_start, batch_end) = (
@@ -477,37 +450,33 @@ impl Parser {
                                     );
 
                                     if let (Some(start), Some(end)) = (batch_start, batch_end) {
+                                        for cap in re::ZONE_CREATED
+                                            .captures_iter(&parser_manager.buffer[start..end])
                                         {
-                                            let mut data = level.lock().unwrap();
-                                            for cap in re::ZONE_CREATED
-                                                .captures_iter(&parser_manager.buffer[start..end])
-                                            {
-                                                dbg!(&cap);
-
-                                                let (_, [alias, local, dim, layer]) = cap.extract();
-                                                let zone = Zone {
-                                                    alias: alias.parse::<u16>()?,
-                                                    local: local.parse::<u16>()?,
-                                                    dimension: dim.to_string(),
-                                                    layer: layer.to_string(),
-                                                    area: None,
-                                                };
-                                                data.zones.push(TimerEntry::Zone(zone));
-                                            }
+                                            let (_, [alias, local, dim, layer]) = cap.extract();
+                                            let zone = Zone {
+                                                alias: alias.parse::<u32>()?,
+                                                local: local.parse::<u32>()?,
+                                                dimension: dim.to_string(),
+                                                layer: layer.to_string(),
+                                                area: None,
+                                            };
+                                            parser_tx.send(ParserMsg::GeneratedZone(zone))?;
                                         }
-                                        parser_manager.state = ParserState::LevelGeneration;
+                                        parser_manager.state = ParserState::ItemGeneration;
                                     }
                                 }
-                                ParserState::LevelGeneration => {
+                                ParserState::ItemGeneration => {}
+                                ParserState::ElevatorDropFinish => {
                                     // TODO: Lel
                                 }
-                                ParserState::ElevatorDropFinish => todo!(),
-                                ParserState::LevelFinish => todo!(),
+                                ParserState::LevelFinish => {}
+                                ParserState::NotInLevel => {}
                             }
                         }
                         TailMsg::NewFile => {
                             parser_manager.buffer.clear();
-                            parser_manager.state = ParserState::Initial;
+                            parser_manager.state = ParserState::LevelSeeds;
                             parser_tx.send(ParserMsg::NewFile)?;
                         }
                         TailMsg::Stop => break,

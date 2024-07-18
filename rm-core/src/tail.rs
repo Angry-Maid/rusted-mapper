@@ -26,14 +26,10 @@ pub enum TailMsg {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Tail {}
+pub struct Tail;
 
 impl Tail {
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    pub fn start_listen(&mut self) -> anyhow::Result<(Sender<TailCmd>, Receiver<TailMsg>)> {
+    pub fn start_listen() -> anyhow::Result<(Sender<TailCmd>, Receiver<TailMsg>)> {
         let (command_tx, command_rx) = channel::<TailCmd>();
         let (data_tx, data_rx) = channel::<TailMsg>();
 
