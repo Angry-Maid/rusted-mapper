@@ -1,8 +1,4 @@
-use std::{
-    iter::zip,
-    sync::{mpsc::TryRecvError, Arc},
-    time::Duration,
-};
+use std::{iter::zip, sync::mpsc::TryRecvError, time::Duration};
 
 use egui::{scroll_area::ScrollBarVisibility, Align, Color32, Frame, ScrollArea};
 use log::debug;
@@ -70,8 +66,8 @@ impl eframe::App for Mapper {
                     self.expedition
                         .as_mut()
                         .unwrap()
-                        .zones
-                        .push(rm_core::parser::TimerEntry::Zone(zone.to_owned()));
+                        .timer_zones
+                        .push(zone.to_owned());
                 }
                 // rm_core::parser::ParserMsg::Gatherable(_) => todo!(),
                 // rm_core::parser::ParserMsg::LevelStart => todo!(),
@@ -153,17 +149,24 @@ impl eframe::App for Mapper {
                             |ui| {
                                 if let Some(level) = &self.expedition {
                                     ui.label(format!("Selected Expedition: {}", level));
-                                    for zone in &level.zones {
+                                    for zone in &level.timer_zones {
                                         match zone {
-                                            rm_core::parser::TimerEntry::Start => {}
+                                            rm_core::parser::TimerEntry::Start => {
+                                                ui.label("Start");
+                                            }
                                             rm_core::parser::TimerEntry::Zone(z) => {
                                                 ui.label(format!(
                                                     "ZONE_{} {} {}",
                                                     z.alias, z.layer, z.dimension
                                                 ));
                                             }
+                                            rm_core::parser::TimerEntry::Custom(s) => {
+                                                ui.label(s);
+                                            }
                                             rm_core::parser::TimerEntry::Invariance(_, _) => {}
-                                            rm_core::parser::TimerEntry::End => todo!(),
+                                            rm_core::parser::TimerEntry::End => {
+                                                ui.label("End");
+                                            }
                                         }
                                     }
                                 }

@@ -1,10 +1,8 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
     path::{Path, PathBuf},
-    sync::{
-        mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc,
-    },
+    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread,
     time::Duration,
 };
@@ -23,7 +21,7 @@ use walkdir::WalkDir;
 
 use crate::tail::{Tail, TailCmd, TailMsg};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct Zone {
     pub alias: u32,
     pub local: u32,
@@ -43,6 +41,7 @@ pub struct Record {
 pub enum TimerEntry {
     Start,
     Zone(Zone),
+    Custom(String),
     Invariance(Vec<Zone>, InvarianceMethod),
     End,
 }
@@ -61,7 +60,7 @@ pub enum InvarianceMethod {
 
 /// Values are corelated to the R8 live build
 #[derive(FromRepr, Debug, Default, Serialize, Deserialize, Clone)]
-#[repr(u8)]
+#[repr(u16)]
 pub enum Rundown {
     #[default]
     Modded,
@@ -77,10 +76,14 @@ pub enum Rundown {
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Level {
+    /// General info about level
     pub rundown: Rundown,
     pub exp_name: String,
-    pub gathatable_items: Vec<GatherItem>,
-    pub zones: Vec<TimerEntry>,
+    pub timer_zones: Vec<TimerEntry>,
+
+    /// Learning mode
+    pub zones: Vec<Zone>,
+    pub gathatable_items: HashMap<Zone, GatherItem>,
     pub maps: Vec<GatherableMap>,
 }
 
@@ -108,44 +111,47 @@ pub struct GatherableMap {
 /// Main enum which keeps list of all gatherable items in game and related data to them
 /// Keys and Bulkhead Keys and HSU don't have item ID and/or have separate algorithm of
 /// generating and are dependant on some internal datablocks(?).
+/// Some items do have names cause there's literaly no other information that can be gotten
+/// for those items. Items that have seed only may have more data, but seed data and other data
+/// are split between 2 different batch jobs and there's no guarantee that the order is preserved.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum GatherItem {
-    /// Zone, Name
-    Key(Zone, String),
-    /// Zone, Name
-    BulkheadKey(Zone, String),
-    /// Zone, Local Area ID, Local Area Name
-    HSU(Zone, u32, char),
-    /// Zone, Name, item idx, idx
-    Generator(Zone, String, u8, u8),
-    /// Zone, Item Seed
-    ID(Zone, u32),
-    /// Zone, Item Seed
-    PD(Zone, u32),
-    /// Zone, Spawn Zone idx
-    Cell(Zone, u8),
-    /// Zone, Name
-    FogTurbine(Zone, String),
-    /// Zone, Name - R2E1 only level for this
-    Neonate(Zone, String),
-    /// Zone, Name
-    Cryo(Zone, String),
-    /// Zone, Item Seed
-    GLP1(Zone, u32),
-    /// Zone, Item Seed
-    OSIP(Zone, u32),
-    /// Zone, Spawn Zone idx
-    Datasphere(Zone, u8),
-    /// Zone, Item Seed
-    PlantSample(Zone, u32),
-    /// Zone, Name
-    HiSec(Zone, String),
-    /// Zone, Item Seed
-    DataCube(Zone, u32),
-    /// Zone, Item Seed
-    GLP2(Zone, u32),
-    /// Zone, Name
-    Cargo(Zone, String),
+    /// Name
+    Key(String),
+    /// Name
+    BulkheadKey(String),
+    /// Local Area ID, Local Area Name
+    HSU(u32, char),
+    /// Name, item idx, idx
+    Generator(String, u8, u8),
+    /// Item Seed
+    ID(u32),
+    /// Item Seed
+    PD(u32),
+    /// Spawn Zone idx
+    Cell(u8),
+    /// Name
+    FogTurbine(String),
+    /// Name - R2E1 only level for this
+    Neonate(String),
+    /// Name
+    Cryo(String),
+    /// Item Seed
+    GLP1(u32),
+    /// Item Seed
+    OSIP(u32),
+    /// Spawn Zone idx
+    Datasphere(u8),
+    /// Item Seed
+    PlantSample(u32),
+    /// Name
+    HiSec(String),
+    /// Item Seed
+    DataCube(u32),
+    /// Item Seed
+    GLP2(u32),
+    /// Name
+    Cargo(String),
 }
 
 #[derive(FromRepr, Debug, Serialize, Deserialize, Clone)]
@@ -245,7 +251,7 @@ pub struct Parser {
 pub enum ParserMsg {
     LevelSeeds(u32, u32, u32),
     LevelInit(Level),
-    GeneratedZone(Zone),
+    GeneratedZone(TimerEntry),
     Gatherable(GatherItem),
     LevelStart,
     ZoneDoorOpened,
@@ -418,7 +424,7 @@ impl Parser {
                                         let (_, [rundown_idx, rundown_exp]) = cap.extract();
                                         parser_manager.pos = cap.get(0).unwrap().end();
 
-                                        let rundown_idx = rundown_idx.parse::<u8>()?;
+                                        let rundown_idx = rundown_idx.parse::<u16>()?;
                                         let rundown_exp = rundown_exp.to_string();
 
                                         let level = Level {
@@ -450,6 +456,8 @@ impl Parser {
                                     );
 
                                     if let (Some(start), Some(end)) = (batch_start, batch_end) {
+                                        parser_tx
+                                            .send(ParserMsg::GeneratedZone(TimerEntry::Start))?;
                                         for cap in re::ZONE_CREATED
                                             .captures_iter(&parser_manager.buffer[start..end])
                                         {
@@ -461,14 +469,27 @@ impl Parser {
                                                 layer: layer.to_string(),
                                                 area: None,
                                             };
-                                            parser_tx.send(ParserMsg::GeneratedZone(zone))?;
+                                            parser_tx.send(ParserMsg::GeneratedZone(
+                                                TimerEntry::Zone(zone),
+                                            ))?;
                                         }
+
+                                        parser_tx
+                                            .send(ParserMsg::GeneratedZone(TimerEntry::End))?;
+
                                         parser_manager.state = ParserState::ItemGeneration;
                                     }
                                 }
-                                ParserState::ItemGeneration => {}
+                                ParserState::ItemGeneration => {
+                                    // TODO: Biggest state yet
+                                    // General work that we need to do here:
+                                    // - Parse for gatherable items (any _other_ gatherable that we can encounter) and record their zones and count
+                                    // - Parse the information for mappable items like keys - 1st Variant
+                                    // - Parse the information for mappable items that have item seed - 2nd Variant
+                                    // - Parse the information for generators if we have generator objective - 3rd Variant
+                                }
                                 ParserState::ElevatorDropFinish => {
-                                    // TODO: Lel
+                                    // TODO: ;_;
                                 }
                                 ParserState::LevelFinish => {}
                                 ParserState::NotInLevel => {}
