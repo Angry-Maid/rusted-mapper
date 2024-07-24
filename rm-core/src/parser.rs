@@ -1,243 +1,24 @@
 use std::{
-    collections::HashMap,
-    fmt::Display,
+    marker,
     path::{Path, PathBuf},
     sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread,
     time::Duration,
 };
 
-use chrono::NaiveTime;
-use glam::Vec2;
 use log::{error, info};
 use might_sleep::cpu_limiter::CpuLimiter;
 use notify::{
     event::CreateKind, recommended_watcher, Error, Event, RecommendedWatcher, RecursiveMode,
     Watcher,
 };
-use serde::{Deserialize, Serialize};
-use strum::FromRepr;
 use walkdir::WalkDir;
 
-use crate::tail::{Tail, TailCmd, TailMsg};
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
-pub struct Zone {
-    pub alias: u32,
-    pub local: u32,
-    pub dimension: String,
-    pub layer: String,
-    pub area: Option<char>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Record {
-    pub time: NaiveTime,
-    pub item: Option<GatherItem>,
-    pub zone: Option<Zone>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum TimerEntry {
-    Start,
-    Zone(Zone),
-    Custom(String),
-    Invariance(Vec<Zone>, InvarianceMethod),
-    End,
-}
-
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
-pub enum InvarianceMethod {
-    #[default]
-    All,
-    /// Number of Zones, filter Item, max num of Item
-    ///
-    /// Filter by Item(if item was provided) N zones
-    /// Max N of items only to have a treshold
-    Any(u32, Option<ItemIdentifier>, Option<u32>),
-    ByGatherable(ItemIdentifier),
-}
-
-/// Values are corelated to the R8 live build
-#[derive(FromRepr, Debug, Default, Serialize, Deserialize, Clone)]
-#[repr(u16)]
-pub enum Rundown {
-    #[default]
-    Modded,
-    R7 = 31,
-    R1 = 32,
-    R2 = 33,
-    R3 = 34,
-    R8 = 35,
-    R4 = 37,
-    R5 = 38,
-    R6 = 41,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct Level {
-    /// General info about level
-    pub rundown: Rundown,
-    pub exp_name: String,
-    pub timer_zones: Vec<TimerEntry>,
-
-    /// Learning mode
-    pub zones: Vec<Zone>,
-    pub gathatable_items: HashMap<Zone, GatherItem>,
-    pub maps: Vec<GatherableMap>,
-}
-
-impl Display for Level {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let expedition = if self.exp_name != "E3" {
-            &self.exp_name
-        } else {
-            &"E2".to_string()
-        };
-        write!(f, "{:?}{}", self.rundown, expedition)
-    }
-}
-
-impl Level {
-    // TODO: impl fn on Level to load level from file
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct GatherableMap {
-    pub outline_poly: Vec<Vec2>,
-    pub blockouts: Vec<[Vec2; 4]>,
-}
-
-/// Main enum which keeps list of all gatherable items in game and related data to them
-/// Keys and Bulkhead Keys and HSU don't have item ID and/or have separate algorithm of
-/// generating and are dependant on some internal datablocks(?).
-/// Some items do have names cause there's literaly no other information that can be gotten
-/// for those items. Items that have seed only may have more data, but seed data and other data
-/// are split between 2 different batch jobs and there's no guarantee that the order is preserved.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum GatherItem {
-    /// Name
-    Key(String),
-    /// Name
-    BulkheadKey(String),
-    /// Local Area ID, Local Area Name
-    HSU(u32, char),
-    /// Name, item idx, idx
-    Generator(String, u8, u8),
-    /// Item Seed
-    ID(u32),
-    /// Item Seed
-    PD(u32),
-    /// Spawn Zone idx
-    Cell(u8),
-    /// Name
-    FogTurbine(String),
-    /// Name - R2E1 only level for this
-    Neonate(String),
-    /// Name
-    Cryo(String),
-    /// Item Seed
-    GLP1(u32),
-    /// Item Seed
-    OSIP(u32),
-    /// Spawn Zone idx
-    Datasphere(u8),
-    /// Item Seed
-    PlantSample(u32),
-    /// Name
-    HiSec(String),
-    /// Item Seed
-    DataCube(u32),
-    /// Item Seed
-    GLP2(u32),
-    /// Name
-    Cargo(String),
-}
-
-#[derive(FromRepr, Debug, Serialize, Deserialize, Clone)]
-#[repr(u8)]
-pub enum ItemIdentifier {
-    ID = 128,
-    PD = 129,
-    Cell = 131,
-    FogTurbine = 133,
-    Neonate = 137,
-    Cryo = 148,
-    GLP1 = 149,
-    OSIP = 150,
-    Datasphere = 151,
-    PlantSample = 153,
-    HiSec = 154,
-    DataCubeR8 = 165,
-    DataCube = 168,
-    GLP2 = 169,
-    Cargo = 176,
-}
-
-pub mod re {
-    use regex::Regex;
-    use std::sync::LazyLock;
-
-    /// At the start of level gen - get the seed info
-    pub static BUILDER_LEVEL_SEEDS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^.*Builder\.Build.*buildSeed:\s(?<build>\d+)\shostIDSeed:\s(?<hostId>\d+)\ssessionSeed:\s(?<session>\d+).*$").unwrap()
-    });
-
-    /// At the start of level gen - get the level info
-    pub static DROP_SERVER_MANAGER_NEW_SESSION: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^.*ServerManager:\s'new\ssession.*?rundown:\sLocal_(?<rundown_idx>\d+),\sexpedition:\s(?<rundown_exp>\w\d).*$").unwrap()
-    });
-
-    /// SetupFloor batch start
-    pub static SETUP_FLOOR_BATCH_START: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?m)^Next\sBatch:\sSetupFloor.*$").unwrap());
-
-    /// SetupFloor batch end
-    pub static SETUP_FLOOR_BATCH_END: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?m)^.*Last\sBatch:\sSetupFloor.*$").unwrap());
-
-    /// Zone info inside SetupFloor batch
-    pub static ZONE_CREATED: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"(?m)^.*?Alias: (?<alias>\d+).*aliasOffset: \w+_(?<local>\d+).*\s.*?Zone\sCreated.*?in\s(?<dim>\w+)\s(?<layer>\w+).*$"
-        )
-        .unwrap()
-    });
-
-    pub static BUILD_END: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^.*BUILDER\s:\sBuildDone$").unwrap());
-
-    pub static SPLIT_TIME: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^(?<h>\d{2}):(?<m>\d{2}):(?<s>\d{2})\.(?<millis>\d{3}).*$").unwrap()
-    });
-
-    pub static CREATE_KEY_ITEM_DISTRIBUTION: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(concat!(
-            r"^.*?PublicName:\s(?<key>[A-Za-z0-9_]+).*?DimensionIndex:\s(?<dim>\w+)\sLocalIndex:\s\w+_(?<local>\d+).*?", // CreateKeyItemDistribution
-            r"(?:\s|.*)*?",                                             // Discard
-            r"TryGetExisting.*?ZONE(?<alias>\d+).*?ri:\s(?<ri>\d+).*$", // TryGetExistingGenericFunctionDistributionForSession
-        ))
-        .unwrap()
-    });
-
-    pub static DISTRIBUTE_HSU: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^.*zone:\s(?<alias>\d+),\sArea:\s(?<id>\d+)_\w+\s(?<area>\w+).*$").unwrap()
-    });
-
-    pub static DISTRIBUTE_WARDEN_OBJECTIVE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"^.*?zone\sZONE(?<alias>\d+).*?Index:\s(?<idx>\d+).*\n.*?itemID:\s(?<item>\d+).*$",
-        )
-        .unwrap()
-    });
-
-    pub static WARDEN_OBJECTIVE_MANAGER: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"^(?<gen>.*LG_PowerGenerator_Graphics.OnSyncStatusChanged.*)?\s?(?:.*?Collection\s(?<id>\d+)\s.*?\s(?<name>\w+_\d+))$"
-        )
-        .unwrap()
-    });
-}
+use crate::{
+    data::{GatherItem, ItemIdentifier, Level, Rundown, TimerEntry, Zone},
+    re,
+    tail::{Tail, TailCmd, TailMsg},
+};
 
 #[derive(Debug)]
 pub struct Parser {
@@ -386,114 +167,6 @@ impl Parser {
                     match val {
                         TailMsg::Content(s) => {
                             parser_manager.buffer.push_str(s.as_str());
-
-                            // Check for level end trigger/level de-init.
-                            if false {
-                                todo!();
-                                continue;
-                            }
-
-                            match parser_manager.state {
-                                ParserState::LevelSeeds => {
-                                    if let Some(ref cap) = re::BUILDER_LEVEL_SEEDS
-                                        .captures_iter(&parser_manager.buffer)
-                                        .last()
-                                    {
-                                        let (_, [build_seed, host_seed, session_seed]) =
-                                            cap.extract();
-                                        parser_manager.pos = cap.get(0).unwrap().end();
-
-                                        let build_seed = build_seed.parse::<u32>()?;
-                                        let host_seed = host_seed.parse::<u32>()?;
-                                        let session_seed = session_seed.parse::<u32>()?;
-
-                                        parser_tx.send(ParserMsg::LevelSeeds(
-                                            build_seed,
-                                            host_seed,
-                                            session_seed,
-                                        ))?;
-
-                                        parser_manager.state = ParserState::LevelSelected;
-                                    }
-                                }
-                                ParserState::LevelSelected => {
-                                    if let Some(cap) = re::DROP_SERVER_MANAGER_NEW_SESSION
-                                        .captures_iter(&parser_manager.buffer)
-                                        .last()
-                                    {
-                                        let (_, [rundown_idx, rundown_exp]) = cap.extract();
-                                        parser_manager.pos = cap.get(0).unwrap().end();
-
-                                        let rundown_idx = rundown_idx.parse::<u16>()?;
-                                        let rundown_exp = rundown_exp.to_string();
-
-                                        let level = Level {
-                                            rundown: Rundown::from_repr(rundown_idx)
-                                                .unwrap_or(Rundown::Modded),
-                                            exp_name: rundown_exp.clone(),
-                                            ..Default::default()
-                                        };
-
-                                        parser_tx.send(ParserMsg::LevelInit(level))?;
-
-                                        parser_manager.state = ParserState::LevelGeneration;
-                                    }
-                                }
-                                ParserState::LevelGeneration => {
-                                    // TODO: add check if level already exists as file and load zones from file
-
-                                    let (batch_start, batch_end) = (
-                                        re::SETUP_FLOOR_BATCH_START
-                                            .captures_iter(&parser_manager.buffer)
-                                            .last()
-                                            .and_then(|c| c.get(0))
-                                            .map(|m| m.start()),
-                                        re::SETUP_FLOOR_BATCH_END
-                                            .captures_iter(&parser_manager.buffer)
-                                            .last()
-                                            .and_then(|c| c.get(0))
-                                            .map(|m| m.end()),
-                                    );
-
-                                    if let (Some(start), Some(end)) = (batch_start, batch_end) {
-                                        parser_tx
-                                            .send(ParserMsg::GeneratedZone(TimerEntry::Start))?;
-                                        for cap in re::ZONE_CREATED
-                                            .captures_iter(&parser_manager.buffer[start..end])
-                                        {
-                                            let (_, [alias, local, dim, layer]) = cap.extract();
-                                            let zone = Zone {
-                                                alias: alias.parse::<u32>()?,
-                                                local: local.parse::<u32>()?,
-                                                dimension: dim.to_string(),
-                                                layer: layer.to_string(),
-                                                area: None,
-                                            };
-                                            parser_tx.send(ParserMsg::GeneratedZone(
-                                                TimerEntry::Zone(zone),
-                                            ))?;
-                                        }
-
-                                        parser_tx
-                                            .send(ParserMsg::GeneratedZone(TimerEntry::End))?;
-
-                                        parser_manager.state = ParserState::ItemGeneration;
-                                    }
-                                }
-                                ParserState::ItemGeneration => {
-                                    // TODO: Biggest state yet
-                                    // General work that we need to do here:
-                                    // - Parse for gatherable items (any _other_ gatherable that we can encounter) and record their zones and count
-                                    // - Parse the information for mappable items like keys - 1st Variant
-                                    // - Parse the information for mappable items that have item seed - 2nd Variant
-                                    // - Parse the information for generators if we have generator objective - 3rd Variant
-                                }
-                                ParserState::ElevatorDropFinish => {
-                                    // TODO: ;_;
-                                }
-                                ParserState::LevelFinish => {}
-                                ParserState::NotInLevel => {}
-                            }
                         }
                         TailMsg::NewFile => {
                             parser_manager.buffer.clear();
@@ -510,6 +183,237 @@ impl Parser {
                 }
             }
 
+            // Check for level end trigger/level de-init.
+            if false {
+                todo!();
+                continue;
+            }
+
+            match parser_manager.state {
+                ParserState::LevelSeeds => {
+                    if let Some(ref cap) = re::BUILDER_LEVEL_SEEDS
+                        .captures_iter(&parser_manager.buffer)
+                        .last()
+                    {
+                        let (_, [build_seed, host_seed, session_seed]) = cap.extract();
+                        parser_manager.pos = cap.get(0).unwrap().end();
+
+                        let build_seed = build_seed.parse::<u32>()?;
+                        let host_seed = host_seed.parse::<u32>()?;
+                        let session_seed = session_seed.parse::<u32>()?;
+
+                        parser_tx.send(ParserMsg::LevelSeeds(
+                            build_seed,
+                            host_seed,
+                            session_seed,
+                        ))?;
+
+                        parser_manager.state = ParserState::LevelSelected;
+                    }
+                }
+                ParserState::LevelSelected => {
+                    if let Some(cap) = re::DROP_SERVER_MANAGER_NEW_SESSION
+                        .captures_iter(&parser_manager.buffer)
+                        .last()
+                    {
+                        let (_, [rundown_idx, rundown_exp]) = cap.extract();
+                        parser_manager.pos = cap.get(0).unwrap().end();
+
+                        let rundown_idx = rundown_idx.parse::<u16>()?;
+                        let rundown_exp = rundown_exp.to_string();
+
+                        let level = Level {
+                            rundown: Rundown::from_repr(rundown_idx).unwrap_or(Rundown::Modded),
+                            exp_name: rundown_exp.clone(),
+                            ..Default::default()
+                        };
+
+                        parser_tx.send(ParserMsg::LevelInit(level))?;
+
+                        parser_manager.state = ParserState::LevelGeneration;
+                    }
+                }
+                ParserState::LevelGeneration => {
+                    // TODO: add check if level already exists as file and load zones from file
+
+                    let (batch_start, batch_end) = (
+                        re::SETUP_FLOOR_BATCH_START
+                            .captures_iter(&parser_manager.buffer)
+                            .last()
+                            .and_then(|c| c.get(0))
+                            .map(|m| m.start()),
+                        re::SETUP_FLOOR_BATCH_END
+                            .captures_iter(&parser_manager.buffer)
+                            .last()
+                            .and_then(|c| c.get(0))
+                            .map(|m| m.end()),
+                    );
+
+                    if let (Some(start), Some(end)) = (batch_start, batch_end) {
+                        parser_tx.send(ParserMsg::GeneratedZone(TimerEntry::Start))?;
+                        for cap in
+                            re::ZONE_CREATED.captures_iter(&parser_manager.buffer[start..end])
+                        {
+                            let (_, [alias, local, dim, layer]) = cap.extract();
+                            parser_tx.send(ParserMsg::GeneratedZone(TimerEntry::Zone(Zone {
+                                alias: alias.parse::<u32>()?,
+                                local: local.parse::<u32>()?,
+                                dimension: dim.to_string(),
+                                layer: layer.to_string(),
+                                area: None,
+                            })))?;
+                        }
+
+                        parser_tx.send(ParserMsg::GeneratedZone(TimerEntry::End))?;
+
+                        parser_manager.state = ParserState::ItemGeneration;
+                    }
+                }
+                ParserState::ItemGeneration => {
+                    // TODO: Biggest state yet
+                    // General work that we need to do here:
+                    // - Parse for gatherable items (any _other_ gatherable that we can encounter) and record their zones and count
+                    // - Parse the information for mappable items like keys - 1st Variant
+                    // - Parse the information for mappable items that have item seed - 2nd Variant
+                    // - Parse the information for generators if we have generator objective - 3rd Variant
+
+                    let (
+                        distribution_batch_start,
+                        distribution_batch_end,
+                        marker_batch_start,
+                        marker_batch_end,
+                    ) = (
+                        re::DISTRIBUTION_BATCH_START
+                            .captures_iter(&parser_manager.buffer)
+                            .last()
+                            .and_then(|c| c.get(0))
+                            .map(|m| m.start()),
+                        re::DISTRIBUTION_BATCH_END
+                            .captures_iter(&parser_manager.buffer)
+                            .last()
+                            .and_then(|c| c.get(0))
+                            .map(|m| m.end()),
+                        re::FUNCTION_MARKERS_BATCH_START
+                            .captures_iter(&parser_manager.buffer)
+                            .last()
+                            .and_then(|c| c.get(0))
+                            .map(|m| m.start()),
+                        re::FUNCTION_MARKERS_BATCH_END
+                            .captures_iter(&parser_manager.buffer)
+                            .last()
+                            .and_then(|c| c.get(0))
+                            .map(|m| m.end()),
+                    );
+
+                    if let (
+                        Some(distribution_start),
+                        Some(distribution_end),
+                        Some(marker_start),
+                        Some(marker_end),
+                    ) = (
+                        distribution_batch_start,
+                        distribution_batch_end,
+                        marker_batch_start,
+                        marker_batch_end,
+                    ) {
+                        let distribution_segment =
+                            &parser_manager.buffer[distribution_start..distribution_end];
+                        let marker_segment = &parser_manager.buffer[marker_start..marker_end];
+
+                        // Keys
+                        for cap in
+                            re::CREATE_KEY_ITEM_DISTRIBUTION.captures_iter(distribution_segment)
+                        {
+                            let (_, [key, dim, _, alias, ri]) = cap.extract();
+                            parser_tx.send(ParserMsg::Gatherable(GatherItem::Key(
+                                key.into(),
+                                dim.into(),
+                                alias.parse()?,
+                                ri.parse()?,
+                            )))?;
+                        }
+
+                        let mut collectibles: Vec<ItemIdentifier> = vec![];
+
+                        for cap in
+                            re::DISTRIBUTE_WARDEN_OBJECTIVE.captures_iter(distribution_segment)
+                        {
+                            let (_, [alias, idx, item]) = cap.extract();
+
+                            collectibles.push(
+                                match ItemIdentifier::from_repr(item.parse()?).unwrap() {
+                                    ItemIdentifier::DataCube | ItemIdentifier::DataCubeR8 => {
+                                        ItemIdentifier::DataCube
+                                    }
+                                    other => other,
+                                },
+                            );
+                        }
+
+                        let mut seeded_collectibles = collectibles.iter().filter(|x| {
+                            matches!(
+                                x,
+                                ItemIdentifier::ID
+                                    | ItemIdentifier::PD
+                                    | ItemIdentifier::GLP1
+                                    | ItemIdentifier::OSIP
+                                    | ItemIdentifier::PlantSample
+                                    | ItemIdentifier::DataCube
+                                    | ItemIdentifier::DataCubeR8
+                                    | ItemIdentifier::GLP2
+                            )
+                        });
+
+                        for cap in re::GENERIC_SMALL_PICKUP_ITEM.captures_iter(marker_segment) {
+                            let (_, [container, seed]) = cap.extract();
+                            let seed = seed.parse::<u32>()?;
+
+                            let item = seeded_collectibles.next();
+
+                            let collectible = match item {
+                                Some(item) => match item {
+                                    ItemIdentifier::ID => GatherItem::ID(container.into(), seed),
+                                    ItemIdentifier::PD => GatherItem::PD(container.into(), seed),
+                                    ItemIdentifier::GLP1 => {
+                                        GatherItem::GLP1(container.into(), seed)
+                                    }
+                                    ItemIdentifier::OSIP => {
+                                        GatherItem::OSIP(container.into(), seed)
+                                    }
+                                    ItemIdentifier::PlantSample => {
+                                        GatherItem::PlantSample(container.into(), seed)
+                                    }
+                                    ItemIdentifier::DataCube | ItemIdentifier::DataCubeR8 => {
+                                        GatherItem::DataCube(container.into(), seed)
+                                    }
+                                    ItemIdentifier::GLP2 => {
+                                        GatherItem::GLP2(container.into(), seed)
+                                    }
+                                    _ => GatherItem::Seeded(container.into(), seed),
+                                },
+                                None => GatherItem::Seeded(container.into(), seed),
+                            };
+
+                            parser_tx.send(ParserMsg::Gatherable(collectible))?;
+                        }
+
+                        for (i, cap) in re::WARDEN_OBJECTIVE_MANAGER
+                            .captures_iter(marker_segment)
+                            .enumerate()
+                        {
+                            dbg!(cap);
+                        }
+
+                        parser_manager.state = ParserState::ElevatorDropFinish;
+                    }
+                }
+                ParserState::ElevatorDropFinish => {
+                    // TODO: ;_;
+                }
+                ParserState::LevelFinish => {}
+                ParserState::NotInLevel => {}
+            }
+
             limiter.might_sleep();
         }
 
@@ -522,127 +426,3 @@ impl Drop for Parser {
         self.stop_tail().unwrap();
     }
 }
-
-// TODO: remove this/rewrite
-// fn split_time(s: String) -> Option<NaiveTime> {
-//     //! 11:11:11.111 - other text -> (11:11:11.111, "other text")
-//     if let Some(caps) = re::SPLIT_TIME.captures(s.as_str()) {
-//         Some(
-//             NaiveTime::from_hms_milli_opt(
-//                 caps.name("h")
-//                     .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//                 caps.name("m")
-//                     .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//                 caps.name("s")
-//                     .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//                 caps.name("millis")
-//                     .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//             )
-//             .unwrap(),
-//         )
-//     } else {
-//         None
-//     }
-// }
-
-// fn create_zone(s: String) -> Option<(u32, u32)> {
-//     //! <color=#C84800>>>>>>>>>------------->>>>>>>>>>>> LG_Floor.CreateZone, Alias: 410 with BuildFromZoneAlias410 zoneAliasStart: 410 aliasOffset: Zone_0</color>
-//     if let Some(caps) = re::CREATE_ZONE.captures(s.as_str()) {
-//         Some((
-//             caps.name("alias")
-//                 .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//             caps.name("local")
-//                 .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//         ))
-//     } else {
-//         None
-//     }
-// }
-
-// fn zone_created(s: String) -> Option<(String, String)> {
-//     //! <b>Zone Created</b> (New Game Object) in Reality MainLayer with
-//     if let Some(caps) = re::ZONE_CREATED.captures(s.as_str()) {
-//         Some((
-//             caps.name("dim").unwrap().as_str().to_owned(),
-//             caps.name("layer").unwrap().as_str().to_owned(),
-//         ))
-//     } else {
-//         None
-//     }
-// }
-
-// // Start of key generation. We can get name of the key and zone(local_name)
-// fn create_key_item_distribution(s: String) -> Option<(String, String, u32)> {
-//     //! <color=purple>CreateKeyItemDistribution, keyItem: PublicName: KEY_WHITE_584 SpawnedItem: KeyItemPickup_Core(Clone)_GateKeyItem:KEY_WHITE_584_terminalKey: KEY_WHITE_584 (KeyItemPickup_Core) placementData: DimensionIndex: Reality LocalIndex: Zone_1 ZonePlacementWeights, Start: 0 Middle: 2500 End: 10000</color>
-//     if let Some(caps) = re::CREATE_KEY_ITEM_DISTRIBUTION.captures(s.as_str()) {
-//         Some((
-//             caps.name("key").unwrap().as_str().to_owned(),
-//             caps.name("dim").unwrap().as_str().to_owned(),
-//             caps.name("local")
-//                 .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//         ))
-//     } else {
-//         None
-//     }
-// }
-
-// // End of key generation. `ri` can be used to give key id
-// // which will be used to map key to it's spawn zone and place in game.
-// fn create_key_get_distribution_function(s: String) -> Option<(u32, u32)> {
-//     //! <color=#C84800>TryGetExistingGenericFunctionDistributionForSession, foundDist in zone: ZONE50 function: ResourceContainerWeak available: 58 randomValue: 0.8431178 ri: 54 had weight: 10001</color>
-//     if let Some(caps) = re::CREATE_KEY_GET_DISTRIBUTION.captures(s.as_str()) {
-//         Some((
-//             caps.name("alias")
-//                 .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//             caps.name("ri")
-//                 .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//         ))
-//     } else {
-//         None
-//     }
-// }
-
-// // Funky Area/Subzone which is consistent with in-game generation. Can be used to identify area(as in A, B, C, E, etc. not 1-1 mapping)
-// pub fn distribute_warden_objective_hydro_stasis_unit(s: String) -> Option<(u32, u32, char)> {
-//     //! <color=#C84800>>>>> LG_Distribute_WardenObjective, placing warden objective item with function HydroStatisUnit for wardenObjectiveType: HSU_FindTakeSample in zone: 52, Area: 15_Area B (LevelGeneration.LG_Area)</color>
-//     if let Some(caps) = re::DISTRIBUTE_HSU.captures(s.as_str()) {
-//         Some((
-//             caps.name("alias")
-//                 .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//             caps.name("id")
-//                 .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//             caps.name("area")
-//                 .map_or('-', |v| v.as_str().chars().next().unwrap()),
-//         ))
-//     } else {
-//         None
-//     }
-// }
-
-// // Mainly to keep track of of number of objective items that is queued up.
-// // No way to know if the order is kept through.
-// fn distribute_warden_objective() -> () {
-//     //! <color=#C84800>LG_Distribute_WardenObjective.SelectZoneFromPlacementAndKeepTrackOnCount, creating dist in zone ZONE14 spawnZones[placementDataIndex].Count: 8 spawnZoneIndex: 6 spawnedInZoneCount: 1</color>
-//     //! <color=#C84800>LG_Distribute_WardenObjective.DistributeGatherRetrieveItems, creating dist to spawn itemID: 149 for chainIndex: 0</color>
-//     todo!()
-// }
-
-// fn warden_objective_mapper_power_generator<'a>() -> () {
-//     //! LG_PowerGenerator_Graphics.OnSyncStatusChanged UnPowered
-//     //! WardenObjectiveManager.RegisterObjectiveItemForCollection 0 item: GENERATOR_190
-//     todo!()
-// }
-
-// // Generalized for any item
-// fn warden_objective_mapper_register_item(s: String) -> Option<(u32, String)> {
-//     //! WardenObjectiveManager.RegisterObjectiveItemForCollection 0 item: GENERATOR_190
-//     if let Some(caps) = re::WARDEN_OBJECTIVE_MANAGER.captures(s.as_str()) {
-//         Some((
-//             caps.name("id")
-//                 .map_or(0u32, |v| u32::from_str_radix(v.as_str(), 10).unwrap()),
-//             caps.name("name").unwrap().as_str().to_owned(),
-//         ))
-//     } else {
-//         None
-//     }
-// }

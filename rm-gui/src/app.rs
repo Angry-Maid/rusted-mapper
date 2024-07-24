@@ -2,7 +2,10 @@ use std::{iter::zip, sync::mpsc::TryRecvError, time::Duration};
 
 use egui::{scroll_area::ScrollBarVisibility, Align, Color32, Frame, ScrollArea};
 use log::debug;
-use rm_core::parser::{Level, Parser};
+use rm_core::{
+    data::{GatherItem, Level, TimerEntry},
+    parser::{Parser, ParserMsg},
+};
 use serde::{self, Deserialize, Serialize};
 
 use crate::built_info;
@@ -13,13 +16,13 @@ pub struct Mapper {
     #[serde(skip)]
     parser: Parser,
     #[serde(skip)]
-    log_buffer: Vec<String>,
-    #[serde(skip)]
     scroll_to_bottom: bool,
     #[serde(skip)]
     seeds: Option<[u32; 3]>,
     #[serde(skip)]
     expedition: Option<Level>,
+    #[serde(skip)]
+    gatherables: Vec<GatherItem>,
 }
 
 impl Default for Mapper {
@@ -27,9 +30,9 @@ impl Default for Mapper {
         Self {
             parser: Parser::new(None),
             scroll_to_bottom: true,
-            log_buffer: Default::default(),
             seeds: None,
             expedition: Default::default(),
+            gatherables: Default::default(),
         }
     }
 }
@@ -51,28 +54,33 @@ impl eframe::App for Mapper {
         let data_msg = &self.parser.rx.as_ref().unwrap().try_recv();
         match data_msg {
             Ok(msg) => match msg {
-                rm_core::parser::ParserMsg::NewFile => {
-                    self.log_buffer.clear();
+                ParserMsg::NewFile => {
+                    self.gatherables.clear();
                     self.seeds = None;
                     self.expedition = None;
                 }
-                rm_core::parser::ParserMsg::LevelSeeds(build_seed, host_seed, session_seed) => {
+                ParserMsg::LevelSeeds(build_seed, host_seed, session_seed) => {
                     self.seeds = Some([*build_seed, *host_seed, *session_seed]);
                 }
-                rm_core::parser::ParserMsg::LevelInit(level) => {
+                ParserMsg::LevelInit(level) => {
                     self.expedition = Some(level.to_owned());
                 }
-                rm_core::parser::ParserMsg::GeneratedZone(zone) => {
+                ParserMsg::GeneratedZone(zone) => {
                     self.expedition
                         .as_mut()
                         .unwrap()
                         .timer_zones
                         .push(zone.to_owned());
+                    if let TimerEntry::Zone(z) = zone {
+                        self.expedition.as_mut().unwrap().zones.push(z.to_owned())
+                    }
                 }
-                // rm_core::parser::ParserMsg::Gatherable(_) => todo!(),
-                // rm_core::parser::ParserMsg::LevelStart => todo!(),
-                // rm_core::parser::ParserMsg::ZoneDoorOpened => todo!(),
-                // rm_core::parser::ParserMsg::LevelFinish => todo!(),
+                ParserMsg::Gatherable(gatherable) => {
+                    self.gatherables.push(gatherable.to_owned());
+                }
+                // ParserMsg::LevelStart => todo!(),
+                // ParserMsg::ZoneDoorOpened => todo!(),
+                // ParserMsg::LevelFinish => todo!(),
                 _ => {
                     debug!("{msg:?}");
                 }
@@ -151,21 +159,38 @@ impl eframe::App for Mapper {
                                     ui.label(format!("Selected Expedition: {}", level));
                                     for zone in &level.timer_zones {
                                         match zone {
-                                            rm_core::parser::TimerEntry::Start => {
+                                            TimerEntry::Start => {
                                                 ui.label("Start");
                                             }
-                                            rm_core::parser::TimerEntry::Zone(z) => {
+                                            TimerEntry::Zone(z) => {
                                                 ui.label(format!(
                                                     "ZONE_{} {} {}",
                                                     z.alias, z.layer, z.dimension
                                                 ));
                                             }
-                                            rm_core::parser::TimerEntry::Custom(s) => {
+                                            TimerEntry::Custom(s) => {
                                                 ui.label(s);
                                             }
-                                            rm_core::parser::TimerEntry::Invariance(_, _) => {}
-                                            rm_core::parser::TimerEntry::End => {
+                                            TimerEntry::Invariance(_, _) => {}
+                                            TimerEntry::End => {
                                                 ui.label("End");
+                                            }
+                                        }
+                                    }
+                                    for gatherable in &self.gatherables {
+                                        match gatherable {
+                                            GatherItem::Key(_, dim, alias, _) => {
+                                                ui.label(format!(
+                                                    "{} {:?}",
+                                                    level[(alias.to_owned(), dim.to_owned())],
+                                                    gatherable
+                                                ));
+                                            }
+                                            GatherItem::Seeded(container, seed) => {
+                                                ui.label(format!("{} {}", container, seed));
+                                            }
+                                            other => {
+                                                ui.label(format!("{other:?}"));
                                             }
                                         }
                                     }

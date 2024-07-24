@@ -1,8 +1,6 @@
 #![feature(duration_constructors)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-
 use rm_gui::built_info;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -23,6 +21,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         built_info::PKG_NAME,
         native_options,
-        Box::new(|cc| Box::new(rm_gui::Mapper::new(cc))),
+        Box::new(|cc| Ok(Box::new(rm_gui::Mapper::new(cc)))),
     )
 }
