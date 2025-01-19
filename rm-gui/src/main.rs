@@ -1,7 +1,6 @@
 #![feature(duration_constructors)]
+#![feature(iter_advance_by)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-use rm_gui::built_info;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
@@ -19,7 +18,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        built_info::PKG_NAME,
+        env!("CARGO_PKG_NAME"),
         native_options,
         Box::new(|cc| Ok(Box::new(rm_gui::Mapper::new(cc)))),
     )

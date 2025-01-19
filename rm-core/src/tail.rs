@@ -2,51 +2,48 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
-    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    sync::mpsc::{Receiver, Sender, TryRecvError},
     thread,
     time::Duration,
 };
 
 use log::{debug, info};
-use might_sleep::cpu_limiter::CpuLimiter;
-use serde::{Deserialize, Serialize};
+use might_sleep::prelude::CpuLimiter;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum TailCmd {
     Open(PathBuf),
     ForceUpdate,
     Stop,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum TailMsg {
     Content(String),
     NewFile,
     Stop,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Tail;
 
 impl Tail {
-    pub fn start_listen() -> anyhow::Result<(Sender<TailCmd>, Receiver<TailMsg>)> {
-        let (command_tx, command_rx) = channel::<TailCmd>();
-        let (data_tx, data_rx) = channel::<TailMsg>();
-
-        thread::Builder::new()
-            .name("tail file reader".into())
-            .spawn(|| Tail::tail_file(command_rx, data_tx))?;
-
-        Ok((command_tx, data_rx))
-    }
-
-    pub fn tail_file(
+    pub fn start_listen(
         command_rx: Receiver<TailCmd>,
         data_tx: Sender<TailMsg>,
     ) -> anyhow::Result<()> {
+        thread::Builder::new()
+            .name("tail file reader".into())
+            .spawn(|| Tail::tail(command_rx, data_tx))?;
+
+        Ok(())
+    }
+
+    pub fn tail(command_rx: Receiver<TailCmd>, data_tx: Sender<TailMsg>) -> anyhow::Result<()> {
         let mut limiter = CpuLimiter::new(Duration::from_millis(250));
 
         let mut logfile: Option<File> = None;
+
         loop {
             match command_rx.try_recv() {
                 Ok(val) => match val {
@@ -54,16 +51,16 @@ impl Tail {
                         logfile.replace(File::open(filepath)?);
                         data_tx.send(TailMsg::NewFile)?;
                     }
+                    TailCmd::ForceUpdate => data_tx.send(TailMsg::Content("".into()))?,
                     TailCmd::Stop => {
                         data_tx.send(TailMsg::Stop)?;
-                        info!("Tail channel got command stop, stopping thread.");
+                        info!("Tail got: {:?}", TailCmd::Stop);
                         break;
                     }
-                    TailCmd::ForceUpdate => data_tx.send(TailMsg::Content("".into()))?,
                 },
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
-                    debug!("Tail channel was disconnected");
+                    debug!("Tail command channel was disconnected");
                     break;
                 }
             }

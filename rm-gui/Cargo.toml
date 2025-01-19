@@ -1,21 +1,19 @@
 [package]
 name = "rm-gui"
 version = "0.1.0"
-edition = "2021"
-
-# For built
-build = "build.rs"
+edition = "2024"
 
 [dependencies]
-clap = { version = "4.5.4", features = ["derive"] }
+log.workspace = true
+env_logger.workspace = true
+serde.workspace = true
+ron.workspace = true
+jiff.workspace = true
+strum.workspace = true
+itertools.workspace = true
+egui = "0.30.0"
+eframe = { version = "0.30.0", default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
 rm-core = { path = "../rm-core" }
-egui = "0.28.1"
-eframe = "0.28.1"
-log = "0.4.21"
-serde = { version = "1.0.203", features = ["derive"] }
-env_logger = "0.11.3"
-anyhow = "1.0.86"
-itertools = "0.13.0"
-
-[build-dependencies]
-built = { version = "0.7.2", features = ["git2"] }

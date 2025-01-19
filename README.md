@@ -4,7 +4,6 @@ A complete rewrite of [Warden Mapper](https://github.com/Toast-arch/GTFO-WARDEN-
 ## Modules
 - [ ] rm-core - core of `Rusted Mapper` with types and most of data related stuff being there.
 - [ ] rm-gui - a GUI with use of `egui` crate to add additional visual representation\help.
-- [ ] key-mapper - a GUI tool to create `ron/json` files for specific maps and key objectives.
 
 ### rm-core
 Core of all types and functions for the rusted mapper applications.
@@ -15,9 +14,3 @@ Main application that will help with getting key items information from logs. Ad
 - [ ] Autosplitter (thanks to [tgb](https://github.com/Tgb03) for the idea and (partial)implementations)
 - [ ] Zone Mapper (i.e. for autosplitter feauture, and if it feasable)
 - [ ] Live/Learning modes
-
-### gather-mapper
-Simple GUI tool to create map of gatherables with additional info exported as `ron/json` formats.
-- [ ] Load image to edit
-- [ ] Add ability to place gatherable objects with additional information(upstairs/downstairs, for lockers/boxes regular/padlock/hacklock)
-- [ ] Export to `ron/json` and other etc. types if need arises.

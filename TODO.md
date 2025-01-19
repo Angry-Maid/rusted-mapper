@@ -26,5 +26,3 @@ In case of string we are looking for multiple entries in it:
   - ResourceContainer ID - `TryGetExistingGenericFunctionDistributionForSession`
 
 ### rm-gui
-
-### key-mapper
