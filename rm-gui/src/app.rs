@@ -71,11 +71,14 @@ impl eframe::App for Mapper {
                     Token::Start => todo!(),
                     Token::Split => todo!(),
                     Token::End => todo!(),
-                    Token::Gatherable(local_idx, dim, gather_item) => {
+                    Token::Gatherable(Some(local_idx), Some(dim), gather_item) => {
                         self.level.gathatable_items.insert(
                             self.level[(local_idx.to_owned(), dim.to_owned())].clone(),
                             gather_item.to_owned(),
                         );
+                    }
+                    Token::Gatherable(None, None, gather_item) => {
+                        self.level.gatherables.push(gather_item.to_owned());
                     }
                     Token::Uncategorized(item_identifier, _) => {
                         self.level.uncategorized.push(item_identifier.to_owned());
@@ -86,7 +89,9 @@ impl eframe::App for Mapper {
                         self.seeds = None;
                         self.level.zones.clear();
                         self.level.gathatable_items.clear();
+                        self.level.gatherables.clear();
                     }
+                    _ => {}
                 }
             }
             Err(TryRecvError::Empty) => {}
@@ -159,11 +164,23 @@ impl eframe::App for Mapper {
                                 {
                                     match gatherable {
                                         GatherItem::Key(name, _, zone_alias, ri) => {
-                                            ui.label(format!("{name} - {ri} - {zone}"))
+                                            ui.label(format!("{name} - ID {ri}"))
                                         }
                                         GatherItem::Seeded(container, seed) => {
                                             ui.label(format!("{container} {seed}"))
                                         }
+                                        other => ui.label(format!("{other:?}")),
+                                    };
+                                }
+                                for gatherable in &self.level.gatherables {
+                                    match gatherable {
+                                        GatherItem::Key(name, _, zone_alias, ri) => {
+                                            ui.label(format!("{name} - {ri}"))
+                                        }
+                                        GatherItem::Seeded(container, seed) => {
+                                            ui.label(format!("{container} {seed}"))
+                                        }
+                                        GatherItem::HSU(id) => ui.label(format!("HSU - ID {id}")),
                                         other => ui.label(format!("{other:?}")),
                                     };
                                 }

@@ -12,7 +12,7 @@ pub enum Token {
     Split,
     End,
     // Local Index, Item
-    Gatherable(u32, String, GatherItem),
+    Gatherable(Option<u32>, Option<String>, GatherItem),
     Uncategorized(ItemIdentifier, u32),
     Reset,
 }
@@ -81,8 +81,8 @@ pub enum GatherItem {
     Key(String, String, u32, u32),
     /// Name
     BulkheadKey(String),
-    /// Local Area ID, Local Area Name
-    HSU(u32, char),
+    /// Local Area ID
+    HSU(u32),
     /// Name, item idx, idx
     Generator(String, u8, u8),
     /// Container, Item Seed
@@ -149,6 +149,7 @@ pub struct Level {
     /// Learning mode
     pub zones: Vec<Zone>,
     pub gathatable_items: HashMap<Zone, GatherItem>,
+    pub gatherables: Vec<GatherItem>,
     pub uncategorized: Vec<ItemIdentifier>,
 }
 

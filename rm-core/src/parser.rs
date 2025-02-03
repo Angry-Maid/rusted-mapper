@@ -204,7 +204,7 @@ impl Parser {
                                 if line.contains("CreateKeyItemDistribution") {
                                     let key = format!(
                                         "{}\n{}",
-                                        line.clone(),
+                                        line,
                                         lines
                                             .by_ref()
                                             .take_while_inclusive(|l| {
@@ -229,7 +229,25 @@ impl Parser {
 
                                         parser_tx.send(ParserMsg(
                                             None,
-                                            Token::Gatherable(alias.parse()?, dim.parse()?, key),
+                                            Token::Gatherable(
+                                                Some(alias.parse()?),
+                                                Some(dim.parse()?),
+                                                key,
+                                            ),
+                                        ))?;
+                                    }
+                                }
+
+                                // HSU
+                                if line.contains("HydroStatisUnit for wardenObjectiveType") {
+                                    if let Some(cap) = re::DISTRIBUTE_HSU.captures(line) {
+                                        let (_, [alias, id, area]) = cap.extract();
+
+                                        let hsu = GatherItem::HSU(id.parse()?);
+
+                                        parser_tx.send(ParserMsg(
+                                            None,
+                                            Token::Gatherable(None, None, hsu),
                                         ))?;
                                     }
                                 }
